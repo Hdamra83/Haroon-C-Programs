@@ -49,3 +49,9 @@ int main() {
 gcc -Wall -o my_bms my_bms.c jbd.o serial.o utils.o jbd_info.o
 
 
+uicvese@raspberrypi:~/jbdtool $ gcc -Wall -o my_bms my_bms.c jbd.o serial.o utils.o jbd_info.o
+my_bms.c:5:10: fatal error: serial.h: No such file or directory
+    5 | #include "serial.h"
+      |          ^~~~~~~~~~
+compilation terminated.
+
