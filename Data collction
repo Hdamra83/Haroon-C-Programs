@@ -46,3 +46,5 @@ int main() {
 }
 
 gcc -Wall -o my_bms my_bms.c jbd.o serial.o utils.o jbd_info.o
+
+gcc -Wall -c "%f" jbd.o serial.o utils.o jbd_info.o
