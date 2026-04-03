@@ -46,7 +46,6 @@ int main() {
 }
 
 
-uicvese@raspberrypi:~ $ find ~ -name "my_bms.c"
-/home/uicvese/jbdtool/my_bms.c
+gcc -Wall -o my_bms my_bms.c jbd.o serial.o utils.o jbd_info.o
 
 
