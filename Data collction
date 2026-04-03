@@ -46,6 +46,7 @@ int main() {
 }
 
 
-uicvese@raspberrypi:~/jbdtool $ mv ~/my_bms.c ~/jbdtool/
-mv: cannot stat '/home/uicvese/my_bms.c': No such file or directory
+uicvese@raspberrypi:~ $ find ~ -name "my_bms.c"
+/home/uicvese/jbdtool/my_bms.c
+
 
