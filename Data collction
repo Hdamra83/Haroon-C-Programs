@@ -44,3 +44,5 @@ int main() {
     jbd_close(jbd);
     return 0;
 }
+
+gcc -Wall -o my_bms my_bms.c jbd.o serial.o utils.o jbd_info.o
