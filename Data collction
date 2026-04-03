@@ -45,10 +45,7 @@ int main() {
     return 0;
 }
 
-gcc -Wall -o my_bms my_bms.c jbd.o serial.o utils.o jbd_info.o
 
-gcc -Wall -c "%f" jbd.o serial.o utils.o jbd_info.o
-
-uicvese@raspberrypi:~ $ gcc -Wall -o my_bms my_bms.c jbd.o serial.o utils.o jbd_info.o
-cc1: fatal error: my_bms.c: No such file or directory
+uicvese@raspberrypi:~/jbdtool $ mv ~/my_bms.c ~/jbdtool/
+mv: cannot stat '/home/uicvese/my_bms.c': No such file or directory
 
