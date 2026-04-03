@@ -1,0 +1,46 @@
+#include <stdio.h>
+#include <stdlib.h>
+#include <time.h>
+#include "jbd.h"
+#include "serial.h"
+
+int main() {
+    jbd_context_t *jbd;
+    jbd_info_t info;
+    char *device = "/dev/ttyACM0";
+
+    jbd = jbd_init(device, 9600);
+    if (!jbd || jbd_open(jbd) != 0) {
+        printf("Error: Could not connect.\n");
+        return 1;
+    }
+
+    if (jbd_get_info(jbd, &info) == 0) {
+        FILE *fp = fopen("battery_history.csv", "a");
+        if (fp != NULL) {
+            time_t now = time(NULL);
+            struct tm *t = localtime(&now);
+            char time_str[20];
+            strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M:%S", t);
+
+            // info.temps[0] is usually the first probe (Cells)
+            // info.temps[1] is usually the second probe (BMS/Ambient)
+            float temp1 = info.temps[0]; 
+
+            // Print to screen
+            printf("[%s] V: %0.2fV | %d%% | Temp: %0.1f°C\n", 
+                    time_str, info.voltage, info.cap_percent, temp1);
+
+            // Save to CSV: Time, Voltage, Percent, Temp
+            fprintf(fp, "%s, %0.2f, %d, %0.1f\n", 
+                    time_str, info.voltage, info.cap_percent, temp1);
+            
+            fclose(fp);
+        }
+    } else {
+        printf("Read failed!\n");
+    }
+
+    jbd_close(jbd);
+    return 0;
+}
