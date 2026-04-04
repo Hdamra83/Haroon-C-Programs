@@ -1,0 +1,99 @@
+#!/usr/bin/env python3
+import subprocess
+import time
+import sys
+import os
+from datetime import datetime
+
+# ── CONFIG ────────────────────────────────────────────
+SERIAL_PORT  = "/dev/ttyAMA10"
+BAUD_RATE    = 9600
+POLL_SECONDS = 30
+LOG_FILE     = "bms_log.csv"
+# ──────────────────────────────────────────────────────
+
+def read_bms():
+    cmd = ["jbdtool", "-t", f"serial:{SERIAL_PORT},{BAUD_RATE}"]
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+        output = result.stdout.strip()
+    except subprocess.TimeoutExpired:
+        print("ERROR: jbdtool timed out - check your serial port and baud rate.")
+        return None
+    except FileNotFoundError:
+        print("ERROR: jbdtool not found.")
+        sys.exit(1)
+    if not output:
+        print("ERROR: No output from jbdtool - check wiring and port.")
+        return None
+    data = {}
+    for line in output.splitlines():
+        parts = line.split(None, 1)
+        if len(parts) == 2:
+            data[parts[0]] = parts[1].strip()
+    return data
+
+def parse_temps(temp_str):
+    try:
+        return [float(t) for t in temp_str.split(",")]
+    except:
+        return []
+
+def estimate_runtime(remaining_ah, current_a):
+    if current_a >= 0:
+        return None
+    hours = remaining_ah / abs(current_a)
+    h = int(hours)
+    m = int((hours - h) * 60)
+    return f"{h}h {m}m"
+
+def display(data):
+    voltage   = float(data.get("Voltage",           0))
+    current   = float(data.get("Current",           0))
+    pct       = int(  data.get("PercentCapacity",   0))
+    remaining = float(data.get("RemainingCapacity", 0))
+    temps     = parse_temps(data.get("Temps", ""))
+    runtime   = estimate_runtime(remaining, current)
+    now       = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+
+    print(f"\n{'─'*40}")
+    print(f"  {now}")
+    print(f"{'─'*40}")
+    print(f"  Voltage      : {voltage:.2f} V")
+    print(f"  State        : {'Charging' if current > 0 else 'Discharging' if current < 0 else 'Idle'}")
+    print(f"  Current      : {current:.2f} A")
+    print(f"  Charge       : {pct}%  ({remaining:.1f} Ah remaining)")
+    if temps:
+        labels = [f"Probe {i+1}: {t:.1f}C" for i, t in enumerate(temps)]
+        print(f"  Temperature  : {', '.join(labels)}")
+    if runtime:
+        print(f"  Est. Runtime : {runtime} remaining")
+    elif current > 0:
+        print(f"  Est. Runtime : charging")
+    else:
+        print(f"  Est. Runtime : idle")
+    print(f"{'─'*40}")
+    return voltage, current, pct, remaining, temps, runtime, now
+
+def log_csv(now, voltage, current, pct, remaining, temps, runtime):
+    write_header = not os.path.exists(LOG_FILE)
+    with open(LOG_FILE, "a") as f:
+        if write_header:
+            temp_headers = ",".join([f"temp{i+1}_c" for i in range(len(temps))])
+            f.write(f"timestamp,voltage_v,current_a,percent,remaining_ah,{temp_headers},est_runtime\n")
+        temp_vals = ",".join([str(t) for t in temps])
+        f.write(f"{now},{voltage},{current},{pct},{remaining},{temp_vals},{runtime or ''}\n")
+
+def main():
+    print(f"JBD BMS Monitor - polling {SERIAL_PORT} every {POLL_SECONDS}s")
+    print(f"Log file: {LOG_FILE}")
+    print("Press Ctrl+C to stop.\n")
+    while True:
+        data = read_bms()
+        if data:
+            voltage, current, pct, remaining, temps, runtime, now = display(data)
+            log_csv(now, voltage, current, pct, remaining, temps, runtime)
+        time.sleep(POLL_SECONDS)
+
+if __name__ == "__main__":
+    main()
