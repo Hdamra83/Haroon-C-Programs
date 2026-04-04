@@ -9,3 +9,7 @@ ID=debian
 HOME_URL="https://www.debian.org/"
 SUPPORT_URL="https://www.debian.org/support"
 BUG_REPORT_URL="https://bugs.debian.org/"
+
+
+
+echo "deb http://deb.debian.org/debian trixie main contrib non-free non-free-firmware" | sudo tee /etc/apt/sources.list
