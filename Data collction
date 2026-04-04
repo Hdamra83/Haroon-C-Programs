@@ -50,4 +50,42 @@ gcc -Wall -o my_bms my_bms.c jbd.o serial.o utils.o jbd_info.o -I.
 
 
 
-gcc -Wall -o my_bms my_bms.c jbd.o serial.o utils.o jbd_info.o -I. -I./include
+my_bms.c: In function ‘main’:
+my_bms.c:7:5: error: unknown type name ‘jbd_context_t’
+    7 |     jbd_context_t *jbd;
+      |     ^~~~~~~~~~~~~
+my_bms.c:8:5: error: unknown type name ‘jbd_info_t’
+    8 |     jbd_info_t info;
+      |     ^~~~~~~~~~
+my_bms.c:11:11: error: implicit declaration of function ‘jbd_init’ [-Wimplicit-function-declaration]
+   11 |     jbd = jbd_init(device, 9600);
+      |           ^~~~~~~~
+my_bms.c:11:9: error: assignment to ‘int *’ from ‘int’ makes pointer from integer without a cast [-Wint-conversion]
+   11 |     jbd = jbd_init(device, 9600);
+      |         ^
+my_bms.c:12:17: error: implicit declaration of function ‘jbd_open’; did you mean ‘fdopen’? [-Wimplicit-function-declaration]
+   12 |     if (!jbd || jbd_open(jbd) != 0) {
+      |                 ^~~~~~~~
+      |                 fdopen
+my_bms.c:17:9: error: implicit declaration of function ‘jbd_get_info’ [-Wimplicit-function-declaration]
+   17 |     if (jbd_get_info(jbd, &info) == 0) {
+      |         ^~~~~~~~~~~~
+my_bms.c:27:31: error: request for member ‘temps’ in something not a structure or union
+   27 |             float temp1 = info.temps[0];
+      |                               ^
+my_bms.c:31:35: error: request for member ‘voltage’ in something not a structure or union
+   31 |                     time_str, info.voltage, info.cap_percent, temp1);
+      |                                   ^
+my_bms.c:31:49: error: request for member ‘cap_percent’ in something not a structure or union
+   31 |                     time_str, info.voltage, info.cap_percent, temp1);
+      |                                                 ^
+my_bms.c:35:35: error: request for member ‘voltage’ in something not a structure or union
+   35 |                     time_str, info.voltage, info.cap_percent, temp1);
+      |                                   ^
+my_bms.c:35:49: error: request for member ‘cap_percent’ in something not a structure or union
+   35 |                     time_str, info.voltage, info.cap_percent, temp1);
+      |                                                 ^
+my_bms.c:43:5: error: implicit declaration of function ‘jbd_close’ [-Wimplicit-function-declaration]
+   43 |     jbd_close(jbd);
+      |     ^~~~~~~~~
+
