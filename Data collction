@@ -38,5 +38,26 @@ int main() {
     return 0;
 }
 
-
 gcc -Wall -o my_bms my_bms.c jbd.o jbd_info.o serial.o utils.o list.o parson.o cfg.o -I. -lm
+
+
+
+
+
+uicvese@raspberrypi:~/jbdtool $ gcc -Wall -o my_bms my_bms.c jbd.o jbd_info.o serial.o utils.o list.o parson.o cfg.o -I. -lm
+/usr/bin/ld: /usr/lib/gcc/aarch64-linux-gnu/14/../../../aarch64-linux-gnu/Scrt1.o: in function `_start':
+(.text+0x1c): undefined reference to `main'
+/usr/bin/ld: (.text+0x20): undefined reference to `main'
+/usr/bin/ld: jbd.o: in function `jbd_crc':
+/home/uicvese/jbdtool/jbd.c:41:(.text+0x18): undefined reference to `debug'
+/usr/bin/ld: /home/uicvese/jbdtool/jbd.c:41:(.text+0x1c): undefined reference to `debug'
+/usr/bin/ld: /home/uicvese/jbdtool/jbd.c:42:(.text+0x54): undefined reference to `debug'
+/usr/bin/ld: /home/uicvese/jbdtool/jbd.c:42:(.text+0x58): undefined reference to `debug'
+/usr/bin/ld: /home/uicvese/jbdtool/jbd.c:44:(.text+0xcc): undefined reference to `debug'
+/usr/bin/ld: jbd.o:/home/uicvese/jbdtool/jbd.c:44: more undefined references to `debug' follow
+collect2: error: ld returned 1 exit status
+uicvese@raspberrypi:~/jbdtool $ 
+
+
+
+
