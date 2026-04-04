@@ -32,4 +32,5 @@ int main() {
 }
 
 
+
 gcc -Wall -o my_bms my_bms.c jbd.o jbd_info.o serial.o utils.o list.o parson.o cfg.o -I. -I./include -lm
