@@ -6,25 +6,40 @@ import os
 from datetime import datetime
 
 # ── CONFIG ────────────────────────────────────────────
-SERIAL_PORT  = "/dev/ttyAMA10"
 BAUD_RATE    = 9600
 POLL_SECONDS = 30
-LOG_FILE     = "bms_log.csv"
+LOG_FILE     = "bms_multi_log.csv"
+
+# One entry per BMS — label them whatever you want
+BMS_LIST = [
+    {"name": "Pack 01", "port": "/dev/ttyUSB0"},
+    {"name": "Pack 02", "port": "/dev/ttyUSB1"},
+    {"name": "Pack 03", "port": "/dev/ttyUSB2"},
+    {"name": "Pack 04", "port": "/dev/ttyUSB3"},
+    {"name": "Pack 05", "port": "/dev/ttyUSB4"},
+    {"name": "Pack 06", "port": "/dev/ttyUSB5"},
+    {"name": "Pack 07", "port": "/dev/ttyUSB6"},
+    {"name": "Pack 08", "port": "/dev/ttyUSB7"},
+    {"name": "Pack 09", "port": "/dev/ttyUSB8"},
+    {"name": "Pack 10", "port": "/dev/ttyUSB9"},
+    {"name": "Pack 11", "port": "/dev/ttyUSB10"},
+    {"name": "Pack 12", "port": "/dev/ttyUSB11"},
+    {"name": "Pack 13", "port": "/dev/ttyUSB12"},
+    {"name": "Pack 14", "port": "/dev/ttyUSB13"},
+]
 # ──────────────────────────────────────────────────────
 
-def read_bms():
-    cmd = ["jbdtool", "-t", f"serial:{SERIAL_PORT},{BAUD_RATE}"]
+def read_bms(port):
+    cmd = ["jbdtool", "-t", f"serial:{port},{BAUD_RATE}"]
     try:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
         output = result.stdout.strip()
     except subprocess.TimeoutExpired:
-        print("ERROR: jbdtool timed out - check your serial port and baud rate.")
         return None
     except FileNotFoundError:
         print("ERROR: jbdtool not found.")
         sys.exit(1)
     if not output:
-        print("ERROR: No output from jbdtool - check wiring and port.")
         return None
     data = {}
     for line in output.splitlines():
@@ -39,6 +54,14 @@ def parse_temps(temp_str):
     except:
         return []
 
+def get_cells(data):
+    cells = []
+    i = 0
+    while f"Cell{i+1}" in data:
+        cells.append(float(data[f"Cell{i+1}"]))
+        i += 1
+    return cells
+
 def estimate_runtime(remaining_ah, current_a):
     if current_a >= 0:
         return None
@@ -47,20 +70,21 @@ def estimate_runtime(remaining_ah, current_a):
     m = int((hours - h) * 60)
     return f"{h}h {m}m"
 
-def display(data):
+def display_pack(name, data):
     voltage   = float(data.get("Voltage",           0))
     current   = float(data.get("Current",           0))
     pct       = int(  data.get("PercentCapacity",   0))
     remaining = float(data.get("RemainingCapacity", 0))
     temps     = parse_temps(data.get("Temps", ""))
+    cells     = get_cells(data)
     runtime   = estimate_runtime(remaining, current)
-    now       = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    state     = "Charging" if current > 0 else "Discharging" if current < 0 else "Idle"
 
-    print(f"\n{'─'*40}")
-    print(f"  {now}")
-    print(f"{'─'*40}")
+    print(f"\n{'═'*45}")
+    print(f"  {name}")
+    print(f"{'═'*45}")
     print(f"  Voltage      : {voltage:.2f} V")
-    print(f"  State        : {'Charging' if current > 0 else 'Discharging' if current < 0 else 'Idle'}")
+    print(f"  State        : {state}")
     print(f"  Current      : {current:.2f} A")
     print(f"  Charge       : {pct}%  ({remaining:.1f} Ah remaining)")
     if temps:
@@ -68,31 +92,98 @@ def display(data):
         print(f"  Temperature  : {', '.join(labels)}")
     if runtime:
         print(f"  Est. Runtime : {runtime} remaining")
-    elif current > 0:
-        print(f"  Est. Runtime : charging")
-    else:
-        print(f"  Est. Runtime : idle")
-    print(f"{'─'*40}")
-    return voltage, current, pct, remaining, temps, runtime, now
 
-def log_csv(now, voltage, current, pct, remaining, temps, runtime):
+    if cells:
+        print(f"\n  --- Cell Voltages ---")
+        for i, v in enumerate(cells):
+            warn = "⚠️ " if v < 2.5 or v > 3.65 else "✓  "
+            print(f"  {warn} Cell {i+1:2d} : {v:.3f} V")
+        diff = max(cells) - min(cells)
+        print(f"\n  Cell Min     : {min(cells):.3f} V")
+        print(f"  Cell Max     : {max(cells):.3f} V")
+        print(f"  Cell Diff    : {diff:.3f} V  {'⚠️  HIGH IMBALANCE' if diff > 0.05 else '✓ balanced'}")
+
+    return {
+        "name": name,
+        "voltage": voltage,
+        "current": current,
+        "pct": pct,
+        "remaining": remaining,
+        "temps": temps,
+        "cells": cells,
+        "runtime": runtime,
+    }
+
+def display_summary(results):
+    valid = [r for r in results if r is not None]
+    if not valid:
+        return
+
+    total_remaining = sum(r["remaining"] for r in valid)
+    total_current   = sum(r["current"]   for r in valid)
+    avg_pct         = sum(r["pct"]        for r in valid) / len(valid)
+    avg_voltage     = sum(r["voltage"]    for r in valid) / len(valid)
+
+    # find weakest pack
+    weakest = min(valid, key=lambda r: r["pct"])
+    # find most imbalanced pack
+    imbalanced = None
+    worst_diff = 0
+    for r in valid:
+        if r["cells"]:
+            diff = max(r["cells"]) - min(r["cells"])
+            if diff > worst_diff:
+                worst_diff = diff
+                imbalanced = r
+
+    runtime = estimate_runtime(total_remaining, total_current)
+
+    print(f"\n{'█'*45}")
+    print(f"  SYSTEM SUMMARY  ({len(valid)}/14 packs online)")
+    print(f"{'█'*45}")
+    print(f"  Avg Voltage    : {avg_voltage:.2f} V")
+    print(f"  Avg Charge     : {avg_pct:.1f}%")
+    print(f"  Total Current  : {total_current:.2f} A")
+    print(f"  Total Capacity : {total_remaining:.1f} Ah remaining")
+    if runtime:
+        print(f"  Est. Runtime   : {runtime} remaining")
+    print(f"\n  Weakest Pack   : {weakest['name']} at {weakest['pct']}%")
+    if imbalanced:
+        print(f"  Most Imbalanced: {imbalanced['name']} diff={worst_diff:.3f}V {'⚠️' if worst_diff > 0.05 else '✓'}")
+    print(f"{'█'*45}")
+
+def log_csv(now, results):
     write_header = not os.path.exists(LOG_FILE)
     with open(LOG_FILE, "a") as f:
         if write_header:
-            temp_headers = ",".join([f"temp{i+1}_c" for i in range(len(temps))])
-            f.write(f"timestamp,voltage_v,current_a,percent,remaining_ah,{temp_headers},est_runtime\n")
-        temp_vals = ",".join([str(t) for t in temps])
-        f.write(f"{now},{voltage},{current},{pct},{remaining},{temp_vals},{runtime or ''}\n")
+            f.write("timestamp,pack,voltage_v,current_a,percent,remaining_ah,est_runtime\n")
+        for r in results:
+            if r:
+                f.write(f"{now},{r['name']},{r['voltage']},{r['current']},{r['pct']},{r['remaining']},{r['runtime'] or ''}\n")
 
 def main():
-    print(f"JBD BMS Monitor - polling {SERIAL_PORT} every {POLL_SECONDS}s")
+    print(f"JBD Multi-BMS Monitor — polling {len(BMS_LIST)} packs every {POLL_SECONDS}s")
     print(f"Log file: {LOG_FILE}")
     print("Press Ctrl+C to stop.\n")
+
     while True:
-        data = read_bms()
-        if data:
-            voltage, current, pct, remaining, temps, runtime, now = display(data)
-            log_csv(now, voltage, current, pct, remaining, temps, runtime)
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        print(f"\n{'─'*45}")
+        print(f"  Poll time: {now}")
+        print(f"{'─'*45}")
+
+        results = []
+        for bms in BMS_LIST:
+            data = read_bms(bms["port"])
+            if data:
+                result = display_pack(bms["name"], data)
+                results.append(result)
+            else:
+                print(f"\n  ⚠️  {bms['name']} ({bms['port']}) — NO DATA / OFFLINE")
+                results.append(None)
+
+        display_summary(results)
+        log_csv(now, results)
         time.sleep(POLL_SECONDS)
 
 if __name__ == "__main__":
