@@ -43,19 +43,36 @@ gcc -Wall -o my_bms my_bms.c jbd.o jbd_info.o serial.o utils.o list.o parson.o c
 
 
 
-
 uicvese@raspberrypi:~/jbdtool $ gcc -Wall -o my_bms my_bms.c jbd.o jbd_info.o serial.o utils.o list.o parson.o cfg.o -I. -lm
-/usr/bin/ld: /usr/lib/gcc/aarch64-linux-gnu/14/../../../aarch64-linux-gnu/Scrt1.o: in function `_start':
-(.text+0x1c): undefined reference to `main'
-/usr/bin/ld: (.text+0x20): undefined reference to `main'
-/usr/bin/ld: jbd.o: in function `jbd_crc':
-/home/uicvese/jbdtool/jbd.c:41:(.text+0x18): undefined reference to `debug'
-/usr/bin/ld: /home/uicvese/jbdtool/jbd.c:41:(.text+0x1c): undefined reference to `debug'
-/usr/bin/ld: /home/uicvese/jbdtool/jbd.c:42:(.text+0x54): undefined reference to `debug'
-/usr/bin/ld: /home/uicvese/jbdtool/jbd.c:42:(.text+0x58): undefined reference to `debug'
-/usr/bin/ld: /home/uicvese/jbdtool/jbd.c:44:(.text+0xcc): undefined reference to `debug'
-/usr/bin/ld: jbd.o:/home/uicvese/jbdtool/jbd.c:44: more undefined references to `debug' follow
-collect2: error: ld returned 1 exit status
+my_bms.c: In function ‘main’:
+my_bms.c:9:5: error: unknown type name ‘jbd_all_info_t’
+    9 |     jbd_all_info_t info;
+      |     ^~~~~~~~~~~~~~
+my_bms.c:14:9: error: implicit declaration of function ‘jbd_init’ [-Wimplicit-function-declaration]
+   14 |     s = jbd_init(NULL, device, "");
+      |         ^~~~~~~~
+my_bms.c:14:7: error: assignment to ‘jbd_session_t *’ {aka ‘struct jbd_session *’} from ‘int’ makes pointer from integer without a cast [-Wint-conversion]
+   14 |     s = jbd_init(NULL, device, "");
+      |       ^
+my_bms.c:21:9: error: implicit declaration of function ‘jbd_open’; did you mean ‘fdopen’? [-Wimplicit-function-declaration]
+   21 |     if (jbd_open(s) != 0) {
+      |         ^~~~~~~~
+      |         fdopen
+my_bms.c:27:9: error: implicit declaration of function ‘jbd_get_all_info’ [-Wimplicit-function-declaration]
+   27 |     if (jbd_get_all_info(s, &info) == 0) {
+      |         ^~~~~~~~~~~~~~~~
+my_bms.c:29:41: error: request for member ‘common’ in something not a structure or union
+   29 |         printf("Voltage: %.2f V\n", info.common.voltage);
+      |                                         ^
+my_bms.c:30:41: error: request for member ‘common’ in something not a structure or union
+   30 |         printf("Capacity: %d %%\n", info.common.percentage);
+      |                                         ^
+my_bms.c:31:40: error: request for member ‘common’ in something not a structure or union
+   31 |         printf("Temp 1: %.1f C\n", info.common.temps[0]);
+      |                                        ^
+my_bms.c:37:5: error: implicit declaration of function ‘jbd_close’ [-Wimplicit-function-declaration]
+   37 |     jbd_close(s);
+      |     ^~~~~~~~~
 uicvese@raspberrypi:~/jbdtool $ 
 
 
