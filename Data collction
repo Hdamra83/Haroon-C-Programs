@@ -1,36 +1,42 @@
 #include <stdio.h>
-#include <time.h>
+#include <stdlib.h>
 #include "jbd.h"
-#include "mybmm.h"
 
 int main() {
+    // This is the path to your USB adapter
     char *device = "/dev/ttyACM0"; 
-    jbd_session_t *jbd;  // Changed from jbd_context_t
-    jbd_all_info_t info; // Changed from jbd_info_t
-    
-    // Initialize the BMS connection
-    jbd = jbd_init(NULL, device, ""); 
-    
-    if (!jbd || jbd_open(jbd) != 0) {
-        printf("Error: Could not connect to BMS on %s\n", device);
+    jbd_session_t *s;
+    jbd_all_info_t info;
+
+    printf("Opening JBD BMS on %s...\n", device);
+
+    // 1. Initialize the session
+    s = jbd_init(NULL, device, "");
+    if (!s) {
+        printf("Failed to initialize JBD session.\n");
         return 1;
     }
 
-    printf("Connected! Fetching data...\n");
-
-    if (jbd_get_all_info(jbd, &info) == 0) {
-        // Field names in this library are slightly different
-        printf("Voltage: %.2fV\n", info.common.voltage);
-        printf("Capacity: %d%%\n", info.common.percentage);
-        printf("Temp 1: %.1fC\n", info.common.temps[0]);
-    } else {
-        printf("Error: Could not read data from BMS.\n");
+    // 2. Open the connection
+    if (jbd_open(s) != 0) {
+        printf("Error: Could not open connection. Check your USB cable and Sudo.\n");
+        return 1;
     }
 
-    jbd_close(jbd);
+    // 3. Read the data
+    if (jbd_get_all_info(s, &info) == 0) {
+        printf("\n--- BMS DATA ---\n");
+        printf("Voltage: %.2f V\n", info.common.voltage);
+        printf("Capacity: %d %%\n", info.common.percentage);
+        printf("Temp 1: %.1f C\n", info.common.temps[0]);
+    } else {
+        printf("Error: Failed to read data from BMS.\n");
+    }
+
+    // 4. Close
+    jbd_close(s);
     return 0;
 }
-
 
 
 gcc -Wall -o my_bms my_bms.c jbd.o jbd_info.o serial.o utils.o list.o parson.o cfg.o -I. -I./include -lm
