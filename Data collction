@@ -1,80 +1,11 @@
-#include <stdio.h>
-#include <stdlib.h>
-#include "jbd.h"
-
-int main() {
-    // This is the path to your USB adapter
-    char *device = "/dev/ttyACM0"; 
-    jbd_session_t *s;
-    jbd_all_info_t info;
-
-    printf("Opening JBD BMS on %s...\n", device);
-
-    // 1. Initialize the session
-    s = jbd_init(NULL, device, "");
-    if (!s) {
-        printf("Failed to initialize JBD session.\n");
-        return 1;
-    }
-
-    // 2. Open the connection
-    if (jbd_open(s) != 0) {
-        printf("Error: Could not open connection. Check your USB cable and Sudo.\n");
-        return 1;
-    }
-
-    // 3. Read the data
-    if (jbd_get_all_info(s, &info) == 0) {
-        printf("\n--- BMS DATA ---\n");
-        printf("Voltage: %.2f V\n", info.common.voltage);
-        printf("Capacity: %d %%\n", info.common.percentage);
-        printf("Temp 1: %.1f C\n", info.common.temps[0]);
-    } else {
-        printf("Error: Failed to read data from BMS.\n");
-    }
-
-    // 4. Close
-    jbd_close(s);
-    return 0;
-}
-
-gcc -Wall -o my_bms my_bms.c jbd.o jbd_info.o serial.o utils.o list.o parson.o cfg.o -I. -lm
-
-
-
-
-uicvese@raspberrypi:~/jbdtool $ gcc -Wall -o my_bms my_bms.c jbd.o jbd_info.o serial.o utils.o list.o parson.o cfg.o -I. -lm
-my_bms.c: In function ‘main’:
-my_bms.c:9:5: error: unknown type name ‘jbd_all_info_t’
-    9 |     jbd_all_info_t info;
-      |     ^~~~~~~~~~~~~~
-my_bms.c:14:9: error: implicit declaration of function ‘jbd_init’ [-Wimplicit-function-declaration]
-   14 |     s = jbd_init(NULL, device, "");
-      |         ^~~~~~~~
-my_bms.c:14:7: error: assignment to ‘jbd_session_t *’ {aka ‘struct jbd_session *’} from ‘int’ makes pointer from integer without a cast [-Wint-conversion]
-   14 |     s = jbd_init(NULL, device, "");
-      |       ^
-my_bms.c:21:9: error: implicit declaration of function ‘jbd_open’; did you mean ‘fdopen’? [-Wimplicit-function-declaration]
-   21 |     if (jbd_open(s) != 0) {
-      |         ^~~~~~~~
-      |         fdopen
-my_bms.c:27:9: error: implicit declaration of function ‘jbd_get_all_info’ [-Wimplicit-function-declaration]
-   27 |     if (jbd_get_all_info(s, &info) == 0) {
-      |         ^~~~~~~~~~~~~~~~
-my_bms.c:29:41: error: request for member ‘common’ in something not a structure or union
-   29 |         printf("Voltage: %.2f V\n", info.common.voltage);
-      |                                         ^
-my_bms.c:30:41: error: request for member ‘common’ in something not a structure or union
-   30 |         printf("Capacity: %d %%\n", info.common.percentage);
-      |                                         ^
-my_bms.c:31:40: error: request for member ‘common’ in something not a structure or union
-   31 |         printf("Temp 1: %.1f C\n", info.common.temps[0]);
-      |                                        ^
-my_bms.c:37:5: error: implicit declaration of function ‘jbd_close’ [-Wimplicit-function-declaration]
-   37 |     jbd_close(s);
-      |     ^~~~~~~~~
-uicvese@raspberrypi:~/jbdtool $ 
-
-
-
-
+uicvese@raspberrypi:~ $ cat /etc/os-release
+PRETTY_NAME="Debian GNU/Linux 13 (trixie)"
+NAME="Debian GNU/Linux"
+VERSION_ID="13"
+VERSION="13 (trixie)"
+VERSION_CODENAME=trixie
+DEBIAN_VERSION_FULL=13.4
+ID=debian
+HOME_URL="https://www.debian.org/"
+SUPPORT_URL="https://www.debian.org/support"
+BUG_REPORT_URL="https://bugs.debian.org/"
