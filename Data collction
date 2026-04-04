@@ -1,91 +1,32 @@
 #include <stdio.h>
-#include <stdlib.h>
 #include <time.h>
 #include "jbd.h"
-#include "serial.h"
+#include "mybmm.h"
 
 int main() {
-    jbd_context_t *jbd;
-    jbd_info_t info;
-    char *device = "/dev/ttyACM0";
-
-    jbd = jbd_init(device, 9600);
+    char *device = "/dev/ttyACM0"; 
+    jbd_session_t *jbd;  // Changed from jbd_context_t
+    jbd_all_info_t info; // Changed from jbd_info_t
+    
+    // Initialize the BMS connection
+    jbd = jbd_init(NULL, device, ""); 
+    
     if (!jbd || jbd_open(jbd) != 0) {
-        printf("Error: Could not connect.\n");
+        printf("Error: Could not connect to BMS on %s\n", device);
         return 1;
     }
 
-    if (jbd_get_info(jbd, &info) == 0) {
-        FILE *fp = fopen("battery_history.csv", "a");
-        if (fp != NULL) {
-            time_t now = time(NULL);
-            struct tm *t = localtime(&now);
-            char time_str[20];
-            strftime(time_str, sizeof(time_str), "%Y-%m-%d %H:%M:%S", t);
+    printf("Connected! Fetching data...\n");
 
-            // info.temps[0] is usually the first probe (Cells)
-            // info.temps[1] is usually the second probe (BMS/Ambient)
-            float temp1 = info.temps[0]; 
-
-            // Print to screen
-            printf("[%s] V: %0.2fV | %d%% | Temp: %0.1f°C\n", 
-                    time_str, info.voltage, info.cap_percent, temp1);
-
-            // Save to CSV: Time, Voltage, Percent, Temp
-            fprintf(fp, "%s, %0.2f, %d, %0.1f\n", 
-                    time_str, info.voltage, info.cap_percent, temp1);
-            
-            fclose(fp);
-        }
+    if (jbd_get_all_info(jbd, &info) == 0) {
+        // Field names in this library are slightly different
+        printf("Voltage: %.2fV\n", info.common.voltage);
+        printf("Capacity: %d%%\n", info.common.percentage);
+        printf("Temp 1: %.1fC\n", info.common.temps[0]);
     } else {
-        printf("Read failed!\n");
+        printf("Error: Could not read data from BMS.\n");
     }
 
     jbd_close(jbd);
     return 0;
 }
-
-
-gcc -Wall -o my_bms my_bms.c jbd.o serial.o utils.o jbd_info.o -I.
-
-
-
-my_bms.c: In function ‘main’:
-my_bms.c:7:5: error: unknown type name ‘jbd_context_t’
-    7 |     jbd_context_t *jbd;
-      |     ^~~~~~~~~~~~~
-my_bms.c:8:5: error: unknown type name ‘jbd_info_t’
-    8 |     jbd_info_t info;
-      |     ^~~~~~~~~~
-my_bms.c:11:11: error: implicit declaration of function ‘jbd_init’ [-Wimplicit-function-declaration]
-   11 |     jbd = jbd_init(device, 9600);
-      |           ^~~~~~~~
-my_bms.c:11:9: error: assignment to ‘int *’ from ‘int’ makes pointer from integer without a cast [-Wint-conversion]
-   11 |     jbd = jbd_init(device, 9600);
-      |         ^
-my_bms.c:12:17: error: implicit declaration of function ‘jbd_open’; did you mean ‘fdopen’? [-Wimplicit-function-declaration]
-   12 |     if (!jbd || jbd_open(jbd) != 0) {
-      |                 ^~~~~~~~
-      |                 fdopen
-my_bms.c:17:9: error: implicit declaration of function ‘jbd_get_info’ [-Wimplicit-function-declaration]
-   17 |     if (jbd_get_info(jbd, &info) == 0) {
-      |         ^~~~~~~~~~~~
-my_bms.c:27:31: error: request for member ‘temps’ in something not a structure or union
-   27 |             float temp1 = info.temps[0];
-      |                               ^
-my_bms.c:31:35: error: request for member ‘voltage’ in something not a structure or union
-   31 |                     time_str, info.voltage, info.cap_percent, temp1);
-      |                                   ^
-my_bms.c:31:49: error: request for member ‘cap_percent’ in something not a structure or union
-   31 |                     time_str, info.voltage, info.cap_percent, temp1);
-      |                                                 ^
-my_bms.c:35:35: error: request for member ‘voltage’ in something not a structure or union
-   35 |                     time_str, info.voltage, info.cap_percent, temp1);
-      |                                   ^
-my_bms.c:35:49: error: request for member ‘cap_percent’ in something not a structure or union
-   35 |                     time_str, info.voltage, info.cap_percent, temp1);
-      |                                                 ^
-my_bms.c:43:5: error: implicit declaration of function ‘jbd_close’ [-Wimplicit-function-declaration]
-   43 |     jbd_close(jbd);
-      |     ^~~~~~~~~
-
