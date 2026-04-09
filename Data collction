@@ -2,35 +2,44 @@ def main():
     print(f"JBD Multi-BMS Monitor — polling {len(BMS_LIST)} packs every {POLL_SECONDS}s")
     print(f"Log file: {LOG_FILE}")
     print("Press Ctrl+C to stop.\n")
-    while True:
-        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        print(f"\n{'─'*45}")
-        print(f"  Poll time: {now}")
-        print(f"{'─'*45}")
 
-       try:
+    try:
         while True:
-            # your existing loop code
-            pass
-        except KeyboardInterrupt:
-            print("\nStopping monitor...")
-            led_state["mode"] = "off"
-            time.sleep(0.2)
-            GPIO.cleanup()
+            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            print(f"\n{'─'*45}")
+            print(f"  Poll time: {now}")
+            print(f"{'─'*45}")
 
-        results = []
-        for bms in BMS_LIST:
-            data = read_bms(bms["port"])
-            if data:
-                result = display_pack(bms["name"], data)
-                results.append(result)
-            else:
-                print(f"\n  ⚠️  {bms['name']} ({bms['port']}) — NO DATA / OFFLINE")
-                results.append(None)
+            results = []
+            for bms in BMS_LIST:
+                data = read_bms(bms["port"])
+                if data:
+                    result = display_pack(bms["name"], data)
+                    results.append(result)
+                else:
+                    print(f"\n  ⚠️  {bms['name']} ({bms['port']}) — NO DATA / OFFLINE")
+                    results.append(None)
 
-        display_summary(results)
-        log_csv(now, results)
-        time.sleep(POLL_SECONDS)
+            display_summary(results)
+            log_csv(now, results)
+
+            # Fast temp monitoring every second between polls
+            for _ in range(POLL_SECONDS):
+                data = read_bms(BMS_LIST[0]["port"])
+                if data:
+                    temps = parse_temps(data.get("Temps", ""))
+                    now_t = datetime.now().strftime("%H:%M:%S")
+                    if temps:
+                        labels = [f"Probe {i+1}: {t:.1f}C" for i, t in enumerate(temps)]
+                        print(f"\r  🌡️  [{now_t}] {', '.join(labels)}   ", end="", flush=True)
+                    monitor_temp_alert(temps)
+                time.sleep(1)
+
+    except KeyboardInterrupt:
+        print("\nStopping monitor...")
+        led_state["mode"] = "off"
+        time.sleep(0.2)
+        GPIO.cleanup()
 
 if __name__ == "__main__":
     main()
