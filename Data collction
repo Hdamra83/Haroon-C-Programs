@@ -43,3 +43,6 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+   f.write(f"{now},{r['name']},{r['voltage']},{r['current']},{r['pct']},{r['remaining']},{r['runtime'], {r[total_voltage] or ''}\n")
+
