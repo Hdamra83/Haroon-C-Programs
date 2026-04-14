@@ -1,71 +1,20 @@
-import RPi.GPIO as GPIO
-import time
-
-NUMBER_OF_DIGITS = 4
-
-def format_num(num):
-    digits_left = NUMBER_OF_DIGITS
-    format_str = ''
-    if num < 0:
-        digits_left -= 1
-        format_str += '-'
-        num *= -1
-    if isinstance(num, int):
-        len_int = len(str(num))
-    else:
-        len_int = len(str(int(round(num))))
-    if len_int > digits_left:
-        return ''
-    else:
-        if isinstance(num, int):
-            format_str += '%d'
-        else:
-            len_frac = digits_left - len_int
-            format_str += '%%.%df' % len_frac
-    return format_str % num
-
-GPIO.setmode(GPIO.BCM)
-
-segments = (11,4,23,8,7,10,18,25)
-for segment in segments:
-    GPIO.setup(segment, GPIO.OUT)
-    GPIO.output(segment, 0)
-
-digits = (22,27,17,24)
-for digit in digits:
-    GPIO.setup(digit, GPIO.OUT)
-    GPIO.output(digit, 1)
-
-num = {
-    ' ':(0,0,0,0,0,0,0),
-    '-':(0,0,0,0,0,0,1),
-    '0':(1,1,1,1,1,1,0),
-    '1':(0,1,1,0,0,0,0),
-    '2':(1,1,0,1,1,0,1),
-    '3':(1,1,1,1,0,0,1),
-    '4':(0,1,1,0,0,1,1),
-    '5':(1,0,1,1,0,1,1),
-    '6':(1,0,1,1,1,1,1),
-    '7':(1,1,1,0,0,0,0),
-    '8':(1,1,1,1,1,1,1),
-    '9':(1,1,1,1,0,1,1)
-}
-
-def display_voltage(total_voltage):
-    """Call this with your total_voltage value to show it on the display."""
+def display_voltage(total_voltage, duration=1.0):
+    """Display voltage for `duration` seconds so it's readable."""
     n = total_voltage
     s = format_num(n).rjust(NUMBER_OF_DIGITS)
-    digit = 0
-    for char in s:
-        if char == '.':
-            continue
-        for loop in range(0, 7):
-            GPIO.output(segments[loop], num[char][loop])
-            if digit < (NUMBER_OF_DIGITS-1) and s[digit+1] == '.':
-                GPIO.output(25, 1)
-            else:
-                GPIO.output(25, 0)
-        GPIO.output(digits[digit], 0)
-        time.sleep(0.001)
-        GPIO.output(digits[digit], 1)
-        digit += 1
+    end_time = time.time() + duration
+    while time.time() < end_time:
+        digit = 0
+        for char in s:
+            if char == '.':
+                continue
+            for loop in range(0, 7):
+                GPIO.output(segments[loop], num[char][loop])
+                if digit < (NUMBER_OF_DIGITS-1) and s[digit+1] == '.':
+                    GPIO.output(25, 1)
+                else:
+                    GPIO.output(25, 0)
+            GPIO.output(digits[digit], 0)
+            time.sleep(0.005)
+            GPIO.output(digits[digit], 1)
+            digit += 1
