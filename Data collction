@@ -1,20 +1,50 @@
-def display_voltage(total_voltage, duration=1.0):
-    """Display voltage for `duration` seconds so it's readable."""
-    n = total_voltage
-    s = format_num(n).rjust(NUMBER_OF_DIGITS)
-    end_time = time.time() + duration
-    while time.time() < end_time:
-        digit = 0
-        for char in s:
-            if char == '.':
-                continue
-            for loop in range(0, 7):
-                GPIO.output(segments[loop], num[char][loop])
-                if digit < (NUMBER_OF_DIGITS-1) and s[digit+1] == '.':
-                    GPIO.output(25, 1)
+
+def main():
+    print(f"JBD Multi-BMS Monitor — polling {len(BMS_LIST)} packs every {POLL_SECONDS}s")
+    print(f"Log file: {LOG_FILE}")
+    print("Press Ctrl+C to stop.\n")
+
+    try:
+        while True:
+            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            print(f"\n{'─'*45}")
+            print(f"  Poll time: {now}")
+            print(f"{'─'*45}")
+
+            results = []
+            for bms in BMS_LIST:
+                data = read_bms(bms["port"])
+                if data:
+                    result = display_pack(bms["name"], data)
+                    results.append(result)
                 else:
-                    GPIO.output(25, 0)
-            GPIO.output(digits[digit], 0)
-            time.sleep(0.005)
-            GPIO.output(digits[digit], 1)
-            digit += 1
+                    print(f"\n  ⚠️  {bms['name']} ({bms['port']}) — NO DATA / OFFLINE")
+                    results.append(None)
+
+            total_voltage = display_summary(results)
+            log_csv(now, results, total_voltage)
+
+            # Fast temp monitoring every second between polls
+            for _ in range(POLL_SECONDS):
+                data = read_bms(BMS_LIST[0]["port"])
+                if data:
+                    temps = parse_temps(data.get("Temps", ""))
+                    now_t = datetime.now().strftime("%H:%M:%S")
+                    if temps:
+                        labels = [f"Probe {i+1}: {t:.1f}C" for i, t in enumerate(temps)]
+                        print(f"\r  🌡️  [{now_t}] {', '.join(labels)}   ", end="", flush=True)
+                    monitor_temp_alert(temps)
+                    led_state["mode"] = "flash"
+
+                display_voltage(58.8)
+                time.sleep(1)
+#            print(data.get(voltage))
+
+    except KeyboardInterrupt:
+        print("\nStopping monitor...")
+        led_state["mode"] = "off"
+        time.sleep(0.2)
+        GPIO.cleanup()
+
+if __name__ == "__main__":
+    main()
