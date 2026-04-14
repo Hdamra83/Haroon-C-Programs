@@ -1,50 +1,61 @@
 
-def main():
-    print(f"JBD Multi-BMS Monitor — polling {len(BMS_LIST)} packs every {POLL_SECONDS}s")
-    print(f"Log file: {LOG_FILE}")
-    print("Press Ctrl+C to stop.\n")
+#!/usr/bin/env python3
+import subprocess
+import time
+import sys
+import os
+import threading
+import RPi.GPIO as GPIO
+from datetime import datetime
+from display import display_voltage
 
+# ── CONFIG ────────────────────────────────────────────
+BAUD_RATE    = 9600
+POLL_SECONDS = 1
+LOG_FILE     = "bms_multi_log.csv"
+led_state    = {"mode": "off"}
+LED_PIN      = 26
+# One entry per BMS — label them whatever you want
+BMS_LIST = [
+    {"name": "Cell Pack 01", "port": "/dev/ttyUSB0"},
+    {"name": "Cell Pack 02", "port": "/dev/ttyUSB1"},
+    {"name": "Cell Pack 03", "port": "/dev/ttyUSB2"},
+    {"name": "Cell Pack 04", "port": "/dev/ttyUSB3"},
+    {"name": "Cell Pack 05", "port": "/dev/ttyUSB4"},
+    {"name": "Cell Pack 06", "port": "/dev/ttyUSB5"},
+    {"name": "Cell Pack 07", "port": "/dev/ttyUSB6"},
+    {"name": "Cell Pack 08", "port": "/dev/ttyUSB7"},
+    {"name": "Cell Pack 09", "port": "/dev/ttyUSB8"},
+    {"name": "Cell Pack 10", "port": "/dev/ttyUSB9"},
+    {"name": "Cell Pack 11", "port": "/dev/ttyUSB10"},
+    {"name": "Cell Pack 12", "port": "/dev/ttyUSB11"},
+    {"name": "Cell Pack 13", "port": "/dev/ttyUSB12"},
+    {"name": "Cell Pack 14", "port": "/dev/ttyUSB13"},
+]
+# ──────────────────────────────────────────────────────
+
+def read_bms(port):
+    cmd = ["jbdtool", "-t", f"serial:{port},{BAUD_RATE}"]
     try:
-        while True:
-            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-            print(f"\n{'─'*45}")
-            print(f"  Poll time: {now}")
-            print(f"{'─'*45}")
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+        output = result.stdout.strip()
+    except subprocess.TimeoutExpired:
+        return None
+    except FileNotFoundError:
+        print("ERROR: jbdtool not found.")
+        sys.exit(1)
+    if not output:
+        return None
+    data = {}
+    for line in output.splitlines():
+        parts = line.split(None, 1)
+        if len(parts) == 2:
+            data[parts[0]] = parts[1].strip()
+    return data
 
-            results = []
-            for bms in BMS_LIST:
-                data = read_bms(bms["port"])
-                if data:
-                    result = display_pack(bms["name"], data)
-                    results.append(result)
-                else:
-                    print(f"\n  ⚠️  {bms['name']} ({bms['port']}) — NO DATA / OFFLINE")
-                    results.append(None)
-
-            total_voltage = display_summary(results)
-            log_csv(now, results, total_voltage)
-
-            # Fast temp monitoring every second between polls
-            for _ in range(POLL_SECONDS):
-                data = read_bms(BMS_LIST[0]["port"])
-                if data:
-                    temps = parse_temps(data.get("Temps", ""))
-                    now_t = datetime.now().strftime("%H:%M:%S")
-                    if temps:
-                        labels = [f"Probe {i+1}: {t:.1f}C" for i, t in enumerate(temps)]
-                        print(f"\r  🌡️  [{now_t}] {', '.join(labels)}   ", end="", flush=True)
-                    monitor_temp_alert(temps)
-                    led_state["mode"] = "flash"
-
-                display_voltage(58.8)
-                time.sleep(1)
-#            print(data.get(voltage))
-
-    except KeyboardInterrupt:
-        print("\nStopping monitor...")
-        led_state["mode"] = "off"
-        time.sleep(0.2)
-        GPIO.cleanup()
-
-if __name__ == "__main__":
-    main()
+def led_controller():
+    """Runs in background, controls LED based on mode."""
+    while True:
+        mode = led_state["mode"]
+        if mode == "solid":
+            GPIO.output(LED_PIN, GPIO.HIGH)
