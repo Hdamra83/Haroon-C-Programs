@@ -1,4 +1,3 @@
-
 #!/usr/bin/env python3
 import subprocess
 import time
@@ -59,3 +58,204 @@ def led_controller():
         mode = led_state["mode"]
         if mode == "solid":
             GPIO.output(LED_PIN, GPIO.HIGH)
+            time.sleep(0.1)
+        elif mode == "flash":
+            GPIO.output(LED_PIN, GPIO.HIGH)
+            time.sleep(0.5)
+            GPIO.output(LED_PIN, GPIO.LOW)
+            time.sleep(0.5)
+        else:
+            GPIO.outlput(LED_PIN, GPIO.LOW)
+            time.sleep(0.1)
+
+# Start LED thread in background
+led_thread = threading.Thread(target=led_controller, daemon=True)
+led_thread.start()
+
+def monitor_temp_alert(temps):
+    if not temps:
+        return
+    max_temp = max(temps)
+    for i, t in enumerate(temps):
+        if t >= 45:
+            print(f"\n🔥 CRITICAL: Probe {i+1} temp is {t:.1f}C — SHUTTING DOWN RISK!")
+        elif t >= 35:
+            print(f"\n⚠️  WARNING: Probe {i+1} temp is {t:.1f}C — getting hot!")
+
+    # Update LED mode based on worst temp across all packs
+    if max_temp >= 45:
+        led_state["mode"] = "solid"   # solid = dangerous
+    elif max_temp >= 35:
+        led_state["mode"] = "flash"   # flashing = warning
+    else:
+        led_state["mode"] = "off"     # off = all good
+
+
+def parse_temps(temp_str):
+    try:
+        return [float(t) for t in temp_str.split(",")]
+    except:
+        return []
+
+def get_cells(data):
+    cells = []
+    i = 0
+    while f"Cell{i+1}" in data:
+        cells.append(float(data[f"Cell{i+1}"]))
+        i += 1
+    return cells
+
+def estimate_runtime(remaining_ah, current_a):
+    if current_a >= 0:
+        return None
+    hours = remaining_ah / abs(current_a)
+    h = int(hours)
+    m = int((hours - h) * 60)
+    return f"{h}h {m}m"
+
+def display_pack(name, data):
+    voltage   = float(data.get("Voltage",           0))
+    current   = float(data.get("Current",           0))
+    pct       = int(  data.get("PercentCapacity",   0))
+    remaining = float(data.get("RemainingCapacity", 0))
+    temps     = parse_temps(data.get("Temps", ""))
+    cells     = get_cells(data)
+    runtime   = estimate_runtime(remaining, current)
+    state     = "Charging" if current > 0 else "Discharging" if current < 0 else "Idle"
+
+    print(f"\n{'═'*45}")
+    print(f"  {name}")
+    print(f"{'═'*45}")
+    print(f"  Voltage      : {voltage:.2f} V")
+    print(f"  State        : {state}")
+    print(f"  Current      : {current:.2f} A")
+    print(f"  Charge       : {pct}%  ({remaining:.1f} Ah remaining)")
+    if temps:
+        labels = [f"Probe {i+1}: {t:.1f}C" for i, t in enumerate(temps)]
+        print(f"  Temperature  : {', '.join(labels)}")
+    if runtime:
+        print(f"  Est. Runtime : {runtime} remaining")
+
+    if cells:
+        print(f"\n  --- Cell Voltages ---")
+        for i, v in enumerate(cells):
+            warn = "⚠️ " if v < 2.5 or v > 3.65 else "✓  "
+            print(f"  {warn} Cell {i+1:2d} : {v:.3f} V")
+        diff = max(cells) - min(cells)
+        print(f"\n  Cell Min     : {min(cells):.3f} V")
+        print(f"  Cell Max     : {max(cells):.3f} V")
+        print(f"  Cell Diff    : {diff:.3f} V  {'⚠️  HIGH IMBALANCE' if diff > 0.05 else '✓ balanced'}")
+
+    return {
+        "name": name,
+        "voltage": voltage,
+        "current": current,
+        "pct": pct,
+        "remaining": remaining,
+        "temps": temps,
+        "cells": cells,
+        "runtime": runtime,
+    }
+
+def display_summary(results):
+    valid = [r for r in results if r is not None]
+    if not valid:
+        return
+
+    total_remaining = sum(r["remaining"] for r in valid)
+    total_current   = sum(r["current"]   for r in valid)
+    avg_pct         = sum(r["pct"]        for r in valid) / len(valid)
+    avg_voltage     = sum(r["voltage"]    for r in valid) / len(valid)
+    total_voltage   = sum(r["voltage"]   for r in valid)
+
+    # find weakest pack
+    weakest = min(valid, key=lambda r: r["pct"])
+    # find most imbalanced pack
+    imbalanced = None
+    worst_diff = 0
+    for r in valid:
+        if r["cells"]:
+            diff = max(r["cells"]) - min(r["cells"])
+            if diff > worst_diff:
+                worst_diff = diff
+                imbalanced = r
+
+    runtime = estimate_runtime(total_remaining, total_current)
+
+    print(f"\n{'█'*45}")
+    print(f"  SYSTEM SUMMARY  ({len(valid)}/14 packs online)")
+    print(f"{'█'*45}")
+    print(f"  Avg Voltage    : {avg_voltage:.2f} V")
+    print(f"  Avg Charge     : {avg_pct:.1f}%")
+    print(f"  Total Current  : {total_current:.2f} A")
+    print(f"  Total Capacity : {total_remaining:.1f} Ah remaining")
+    print(f"  Total Voltage  : {total_voltage:.2f} V")
+
+ #   display_voltage(total_voltage)
+
+    if runtime:
+        print(f"  Est. Runtime   : {runtime} remaining")
+    print(f"\n  Weakest Pack   : {weakest['name']} at {weakest['pct']}%")
+    if imbalanced:
+        print(f"  Most Imbalanced: {imbalanced['name']} diff={worst_diff:.3f}V {'⚠️' if worst_diff > 0.05 else '✓'}")
+    print(f"{'█'*45}")
+    return total_voltage
+
+def log_csv(now, results, total_voltage):
+    write_header = not os.path.exists(LOG_FILE)
+    with open(LOG_FILE, "a") as f:
+        if write_header:
+            f.write("timestamp,pack,voltage_v,current_a,percent,remaining_ah,est_runtime,total_voltage\n")
+        for r in results:
+            if r:
+                f.write(f"{now},{r['name']},{r['voltage']},{r['current']},{r['pct']},{r['remaining']},{r['runtime'] or ''}, {[total_voltage]}\n")
+
+def main():
+    print(f"JBD Multi-BMS Monitor — polling {len(BMS_LIST)} packs every {POLL_SECONDS}s")
+    print(f"Log file: {LOG_FILE}")
+    print("Press Ctrl+C to stop.\n")
+
+    try:
+        while True:
+            now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            print(f"\n{'─'*45}")
+            print(f"  Poll time: {now}")
+            print(f"{'─'*45}")
+
+            results = []
+            for bms in BMS_LIST:
+                data = read_bms(bms["port"])
+                if data:
+                    result = display_pack(bms["name"], data)
+                    results.append(result)
+                else:
+                    print(f"\n  ⚠️  {bms['name']} ({bms['port']}) — NO DATA / OFFLINE")
+                    results.append(None)
+
+            total_voltage = display_summary(results)
+            log_csv(now, results, total_voltage)
+
+            # Fast temp monitoring every second between polls
+            for _ in range(POLL_SECONDS):
+                data = read_bms(BMS_LIST[0]["port"])
+                if data:
+                    temps = parse_temps(data.get("Temps", ""))
+                    now_t = datetime.now().strftime("%H:%M:%S")
+                    if temps:
+                        labels = [f"Probe {i+1}: {t:.1f}C" for i, t in enumerate(temps)]
+                        print(f"\r  🌡️  [{now_t}] {', '.join(labels)}   ", end="", flush=True)
+                    monitor_temp_alert(temps)
+                led_state["mode"] = "flash"
+
+                display_voltage(58.8)
+                time.sleep(1)
+#            print(data.get(voltage))
+
+    except KeyboardInterrupt:
+        print("\nStopping monitor...")
+        led_state["mode"] = "off"
+        time.sleep(0.2)
+        GPIO.cleanup()
+
+if __name__ == "__main__":
+    main()
