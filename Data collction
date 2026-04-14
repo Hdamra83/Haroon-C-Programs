@@ -14,7 +14,7 @@ POLL_SECONDS = 1
 LOG_FILE     = "bms_multi_log.csv"
 led_state    = {"mode": "off"}
 LED_PIN      = 26
-# One entry per BMS — label them whatever you want
+
 BMS_LIST = [
     {"name": "Cell Pack 01", "port": "/dev/ttyUSB0"},
     {"name": "Cell Pack 02", "port": "/dev/ttyUSB1"},
@@ -32,6 +32,31 @@ BMS_LIST = [
     {"name": "Cell Pack 14", "port": "/dev/ttyUSB13"},
 ]
 # ──────────────────────────────────────────────────────
+
+# GPIO setup
+GPIO.setmode(GPIO.BCM)
+GPIO.setup(LED_PIN, GPIO.OUT)
+GPIO.output(LED_PIN, GPIO.LOW)
+
+def led_controller():
+    """Runs in background, controls LED based on mode."""
+    while True:
+        mode = led_state["mode"]
+        if mode == "solid":
+            GPIO.output(LED_PIN, GPIO.HIGH)
+            time.sleep(0.1)
+        elif mode == "flash":
+            GPIO.output(LED_PIN, GPIO.HIGH)
+            time.sleep(0.5)
+            GPIO.output(LED_PIN, GPIO.LOW)
+            time.sleep(0.5)
+        else:
+            GPIO.output(LED_PIN, GPIO.LOW)
+            time.sleep(0.1)
+
+# Start LED thread in background
+led_thread = threading.Thread(target=led_controller, daemon=True)
+led_thread.start()
 
 def read_bms(port):
     cmd = ["jbdtool", "-t", f"serial:{port},{BAUD_RATE}"]
@@ -52,26 +77,6 @@ def read_bms(port):
             data[parts[0]] = parts[1].strip()
     return data
 
-def led_controller():
-    """Runs in background, controls LED based on mode."""
-    while True:
-        mode = led_state["mode"]
-        if mode == "solid":
-            GPIO.output(LED_PIN, GPIO.HIGH)
-            time.sleep(0.1)
-        elif mode == "flash":
-            GPIO.output(LED_PIN, GPIO.HIGH)
-            time.sleep(0.5)
-            GPIO.output(LED_PIN, GPIO.LOW)
-            time.sleep(0.5)
-        else:
-            GPIO.outlput(LED_PIN, GPIO.LOW)
-            time.sleep(0.1)
-
-# Start LED thread in background
-led_thread = threading.Thread(target=led_controller, daemon=True)
-led_thread.start()
-
 def monitor_temp_alert(temps):
     if not temps:
         return
@@ -82,14 +87,12 @@ def monitor_temp_alert(temps):
         elif t >= 35:
             print(f"\n⚠️  WARNING: Probe {i+1} temp is {t:.1f}C — getting hot!")
 
-    # Update LED mode based on worst temp across all packs
     if max_temp >= 45:
-        led_state["mode"] = "solid"   # solid = dangerous
+        led_state["mode"] = "solid"
     elif max_temp >= 35:
-        led_state["mode"] = "flash"   # flashing = warning
+        led_state["mode"] = "flash"
     else:
-        led_state["mode"] = "off"     # off = all good
-
+        led_state["mode"] = "off"
 
 def parse_temps(temp_str):
     try:
@@ -160,17 +163,15 @@ def display_pack(name, data):
 def display_summary(results):
     valid = [r for r in results if r is not None]
     if not valid:
-        return
+        return 0
 
     total_remaining = sum(r["remaining"] for r in valid)
     total_current   = sum(r["current"]   for r in valid)
-    avg_pct         = sum(r["pct"]        for r in valid) / len(valid)
-    avg_voltage     = sum(r["voltage"]    for r in valid) / len(valid)
+    avg_pct         = sum(r["pct"]       for r in valid) / len(valid)
+    avg_voltage     = sum(r["voltage"]   for r in valid) / len(valid)
     total_voltage   = sum(r["voltage"]   for r in valid)
 
-    # find weakest pack
     weakest = min(valid, key=lambda r: r["pct"])
-    # find most imbalanced pack
     imbalanced = None
     worst_diff = 0
     for r in valid:
@@ -190,9 +191,6 @@ def display_summary(results):
     print(f"  Total Current  : {total_current:.2f} A")
     print(f"  Total Capacity : {total_remaining:.1f} Ah remaining")
     print(f"  Total Voltage  : {total_voltage:.2f} V")
-
- #   display_voltage(total_voltage)
-
     if runtime:
         print(f"  Est. Runtime   : {runtime} remaining")
     print(f"\n  Weakest Pack   : {weakest['name']} at {weakest['pct']}%")
@@ -208,7 +206,7 @@ def log_csv(now, results, total_voltage):
             f.write("timestamp,pack,voltage_v,current_a,percent,remaining_ah,est_runtime,total_voltage\n")
         for r in results:
             if r:
-                f.write(f"{now},{r['name']},{r['voltage']},{r['current']},{r['pct']},{r['remaining']},{r['runtime'] or ''}, {[total_voltage]}\n")
+                f.write(f"{now},{r['name']},{r['voltage']},{r['current']},{r['pct']},{r['remaining']},{r['runtime'] or ''},{total_voltage}\n")
 
 def main():
     print(f"JBD Multi-BMS Monitor — polling {len(BMS_LIST)} packs every {POLL_SECONDS}s")
@@ -246,10 +244,8 @@ def main():
                         print(f"\r  🌡️  [{now_t}] {', '.join(labels)}   ", end="", flush=True)
                     monitor_temp_alert(temps)
                 led_state["mode"] = "flash"
-
-                display_voltage(58.8)
+                display_voltage(total_voltage)
                 time.sleep(1)
-#            print(data.get(voltage))
 
     except KeyboardInterrupt:
         print("\nStopping monitor...")
