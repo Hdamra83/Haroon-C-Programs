@@ -15,13 +15,15 @@ POLL_SECONDS = 30
 LOG_FILE     = "bms_log.csv"
 led_state    = {"mode": "off"}
 LED_PIN      = 26
-# ──────────────────────────────────────────────────────
+LED_BRAKE    = 16
+#──────────────────────────────────────────────────────
 
 # GPIO setup
 GPIO.setmode(GPIO.BCM)
 GPIO.setup(LED_PIN, GPIO.OUT)
 GPIO.output(LED_PIN, GPIO.LOW)
-
+GPIO.setup(LED_BRAKE, GPIO.OUT)
+GPIO.output(LED_BRAKE, GPIO.HIGH)
 def led_controller():
     """Runs in background, controls LED based on mode."""
     while True:
@@ -154,7 +156,8 @@ def main():
                         labels = [f"Probe {i+1}: {t:.1f}C" for i, t in enumerate(temps)]
                         print(f"\r  🌡️  [{now_t}] {', '.join(labels)}   ", end="", flush=True)
                     monitor_temp_alert(temps)
-                display_voltage(voltage)
+                display_voltage(30.28)
+                GPIO.output(LED_PIN,GPIO.HIGH) #test led
                 time.sleep(1)
 
     except KeyboardInterrupt:
@@ -162,6 +165,10 @@ def main():
         led_state["mode"] = "off"
         time.sleep(0.2)
         GPIO.cleanup()
+
+if __name__ == "__main__":
+    main()
+
 
 if __name__ == "__main__":
     main()
