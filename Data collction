@@ -173,21 +173,29 @@ if __name__ == "__main__":
 if __name__ == "__main__":
     main()
 
-uicvese@raspberrypi:~ $ sudo apt install ch343
-Error: Unable to locate package ch343
-uicvese@raspberrypi:~ $ sudo apt install kmod
-kmod is already the newest version (34.2-2).
-The following packages were automatically installed and are no longer required:
-  alacarte          gnome-menus  libgnome-menu-3-0  retry
-  gir1.2-gmenu-3.0  gtk-nop      python3-gi-cairo
-Use 'sudo apt autoremove' to remove them.
-
-Summary:
-  Upgrading: 0, Installing: 0, Removing: 0, Not Upgrading: 18
-uicvese@raspberrypi:~ $ lsmod | grep ch343
-uicvese@raspberrypi:~ $ lsmod | grep ch341
-uicvese@raspberrypi:~ $ ls /dev/ttyACM*
-/dev/ttyACM0
-uicvese@raspberrypi:~ $ ls /dev/ttyUSB*
-ls: cannot access '/dev/ttyUSB*': No such file or directory
+uicvese@raspberrypi:~ $ jbdtool ~t serial:/dev/ttyACM0,9600
+jbdtool version 1.8 build 202604031923
+usage: jbdtool [-abcjJFrwlhXN] [-f filename] [-t <module:target>] [-o output file] [-m <mqtt_info>] [-i <mqtt_update_interval>]
+arguments:
+  -d <#>		debug output
+  -c		comma-delimited output
+  -g <on|off>	charging on/off
+  -G <on|off>	discharging on/off
+  -j		JSON output
+  -J		JSON output pretty print
+  -F 		Flatten JSON arrays
+  -r		read parameters
+  -a		read all parameters
+  -w		write parameters
+  -l		list supported parameters
+  -h		this output
+  -f <filename>	input filename for read/write.
+  -o <filename>	output filename
+  -t <transport:target> transport & target
+  -e <opts>	transport-specific opts
+  -n 		numbers only; dont interpret
+  -m <host:clientid:topic[:user[:pass]]> Send results to MQTT broker
+  -i 		Update interval
+  -X 		reset BMS
+  -N 		dont wait if locked
 uicvese@raspberrypi:~ $ 
