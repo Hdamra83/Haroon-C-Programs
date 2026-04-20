@@ -173,15 +173,21 @@ if __name__ == "__main__":
 if __name__ == "__main__":
     main()
 
+uicvese@raspberrypi:~ $ sudo apt install ch343
+Error: Unable to locate package ch343
+uicvese@raspberrypi:~ $ sudo apt install kmod
+kmod is already the newest version (34.2-2).
+The following packages were automatically installed and are no longer required:
+  alacarte          gnome-menus  libgnome-menu-3-0  retry
+  gir1.2-gmenu-3.0  gtk-nop      python3-gi-cairo
+Use 'sudo apt autoremove' to remove them.
 
-uicvese@raspberrypi:~ $ lsusb
-Bus 001 Device 001: ID 1d6b:0002 Linux Foundation 2.0 root hub
-Bus 001 Device 007: ID 413c:2107 Dell Computer Corp. KB212-B Quiet Key Keyboard
-Bus 002 Device 001: ID 1d6b:0003 Linux Foundation 3.0 root hub
-Bus 003 Device 001: ID 1d6b:0002 Linux Foundation 2.0 root hub
-Bus 003 Device 009: ID 1a86:55d3 QinHeng Electronics USB Single Serial
-Bus 003 Device 010: ID 046d:c077 Logitech, Inc. Mouse
-Bus 004 Device 001: ID 1d6b:0003 Linux Foundation 3.0 root hub
+Summary:
+  Upgrading: 0, Installing: 0, Removing: 0, Not Upgrading: 18
+uicvese@raspberrypi:~ $ lsmod | grep ch343
+uicvese@raspberrypi:~ $ lsmod | grep ch341
+uicvese@raspberrypi:~ $ ls /dev/ttyACM*
+/dev/ttyACM0
+uicvese@raspberrypi:~ $ ls /dev/ttyUSB*
+ls: cannot access '/dev/ttyUSB*': No such file or directory
 uicvese@raspberrypi:~ $ 
-
-sudo apt install linux-modules-extra-$(uname -r)
