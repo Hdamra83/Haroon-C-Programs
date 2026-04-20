@@ -173,29 +173,43 @@ if __name__ == "__main__":
 if __name__ == "__main__":
     main()
 
-uicvese@raspberrypi:~ $ jbdtool ~t serial:/dev/ttyACM0,9600
-jbdtool version 1.8 build 202604031923
-usage: jbdtool [-abcjJFrwlhXN] [-f filename] [-t <module:target>] [-o output file] [-m <mqtt_info>] [-i <mqtt_update_interval>]
-arguments:
-  -d <#>		debug output
-  -c		comma-delimited output
-  -g <on|off>	charging on/off
-  -G <on|off>	discharging on/off
-  -j		JSON output
-  -J		JSON output pretty print
-  -F 		Flatten JSON arrays
-  -r		read parameters
-  -a		read all parameters
-  -w		write parameters
-  -l		list supported parameters
-  -h		this output
-  -f <filename>	input filename for read/write.
-  -o <filename>	output filename
-  -t <transport:target> transport & target
-  -e <opts>	transport-specific opts
-  -n 		numbers only; dont interpret
-  -m <host:clientid:topic[:user[:pass]]> Send results to MQTT broker
-  -i 		Update interval
-  -X 		reset BMS
-  -N 		dont wait if locked
-uicvese@raspberrypi:~ $ 
+uicvese@raspberrypi:~ $ jbdtool -t serial:/dev/ttyACM0,9600
+Voltage                   33.160
+Current                   0.000
+DesignCapacity            200.000
+RemainingCapacity         199.940
+PercentCapacity           100
+CycleCount                0
+Probes                    3
+Strings                   8
+Temps                     22.0,-30.0,18.8
+Cells                     4.145,4.152,4.146,4.142,4.145,4.148,4.149,4.140
+Balance                   01000100
+CellTotal                 33.167
+CellMin                   4.140
+CellMax                   4.152
+CellDiff                  0.012
+CellAvg                   4.146
+DeviceName                JBD-AP21S004-P21S-200A-B
+ManufactureDate           20231219
+Version                   3.7
+FET                       Charge,Discharge
+uicvese@raspberrypi:~ $ python3 bms_monitor.py
+JBD BMS Monitor - polling /dev/ttyAMA0 every 5s
+Log file: bms_log.csv
+Press Ctrl+C to stop.
+
+Running startup test...
+Startup test complete!
+
+
+────────────────────────────────────────
+  2026-04-17 00:07:10
+────────────────────────────────────────
+  Voltage      : 0.00 V
+  State        : Idle
+  Current      : 0.00 A
+  Charge       : 0%  (0.0 Ah remaining)
+  Est. Runtime : idle
+────────────────────────────────────────
+
