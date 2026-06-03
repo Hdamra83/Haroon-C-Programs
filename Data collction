@@ -839,7 +839,8 @@ int main()
 
 
 
-sudo apt install wiringpi build-essential
+git clone https://github.com/WiringPi/WiringPi.git
+cd WiringPi
 
 
 
