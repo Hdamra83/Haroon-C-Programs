@@ -841,9 +841,12 @@ int main()
 g++ -O3 -std=c++17 bms_monitor.cpp -o bms_monitor -lwiringPi -pthread
 
 uicvese@raspberrypi:~ $ g++ -O3 -std=c++17 bms_monitor.cpp -o bms_monitor -lwiringPi -pthread
-cc1plus: fatal error: bms_monitor.cpp: No such file or directory
+bms_monitor.cpp:31:10: fatal error: wiringPi.h: No such file or directory
+   31 | #include <wiringPi.h>   // sudo apt install wiringpi
+      |          ^~~~~~~~~~~~
 compilation terminated.
 uicvese@raspberrypi:~ $ 
+
 
 
 
