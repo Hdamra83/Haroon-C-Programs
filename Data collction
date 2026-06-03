@@ -837,15 +837,32 @@ int main()
     return 0;
 }
 
-
-g++ -O3 -std=c++17 bms_monitor.cpp -o bms_monitor -lwiringPi -pthread
-
 uicvese@raspberrypi:~ $ g++ -O3 -std=c++17 bms_monitor.cpp -o bms_monitor -lwiringPi -pthread
-bms_monitor.cpp:31:10: fatal error: wiringPi.h: No such file or directory
-   31 | #include <wiringPi.h>   // sudo apt install wiringpi
-      |          ^~~~~~~~~~~~
-compilation terminated.
+bms_monitor.cpp: In function ‘void display_bms(const BmsData&, const std::string&)’:
+bms_monitor.cpp:383:29: error: ‘min_element’ is not a member of ‘std’; did you mean ‘tuple_element’?
+  383 |         double vmin = *std::min_element(d.cell_v.begin(), d.cell_v.end());
+      |                             ^~~~~~~~~~~
+      |                             tuple_element
+bms_monitor.cpp:384:29: error: ‘max_element’ is not a member of ‘std’; did you mean ‘tuple_element’?
+  384 |         double vmax = *std::max_element(d.cell_v.begin(), d.cell_v.end());
+      |                             ^~~~~~~~~~~
+      |                             tuple_element
+bms_monitor.cpp: In function ‘void monitor_temp_alert(const std::vector<double>&)’:
+bms_monitor.cpp:402:29: error: ‘max_element’ is not a member of ‘std’; did you mean ‘tuple_element’?
+  402 |     double max_temp = *std::max_element(temps.begin(), temps.end());
+      |                             ^~~~~~~~~~~
+      |                             tuple_element
+bms_monitor.cpp: In function ‘int main()’:
+bms_monitor.cpp:483:12: error: ‘SIGINT’ was not declared in this scope
+  483 |     signal(SIGINT, [](int) { g_running.store(false); });
+      |            ^~~~~~
+bms_monitor.cpp:483:5: error: ‘signal’ was not declared in this scope; did you mean ‘sinl’?
+  483 |     signal(SIGINT, [](int) { g_running.store(false); });
+      |     ^~~~~~
+      |     sinl
 uicvese@raspberrypi:~ $ 
+
+
 
 
 
