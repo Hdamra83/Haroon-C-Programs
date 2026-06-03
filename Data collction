@@ -838,6 +838,8 @@ int main()
 }
 
 
+g++ -O3 -std=c++17 bms_monitor.cpp -o bms_monitor -lwiringPi -pthread
+
 
 git clone https://github.com/WiringPi/WiringPi.git
 cd WiringPi
