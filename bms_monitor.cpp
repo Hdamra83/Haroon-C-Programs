@@ -1,85 +1,171 @@
-// ─────────────────────────────────────────────────────────────────────────────
-// bms_monitor.cpp  –  JBD BMS monitor for Raspberry Pi
-//
-// Replaces the Python version that spawned jbdtool every second.
-// Instead, we hold the serial port open and speak the JBD binary
-// protocol directly – orders of magnitude faster.
-//
-// Build:  see Makefile
-// Deps:   wiringPi  (sudo apt install wiringpi)
-// ─────────────────────────────────────────────────────────────────────────────
-
-#include <atomic>
-#include <cerrno>
-#include <chrono>
-#include <cmath>
-#include <cstdint>
-#include <cstring>
-#include <ctime>
-#include <fstream>
-#include <iomanip>
 #include <iostream>
+#include <fstream>
 #include <sstream>
 #include <string>
-#include <thread>
 #include <vector>
-
+#include <thread>
+#include <atomic>
+#include <chrono>
+#include <ctime>
+#include <cmath>
+#include <algorithm>
 #include <fcntl.h>
 #include <termios.h>
 #include <unistd.h>
+#include <wiringPi.h>
 
-#include <wiringPi.h>   // sudo apt install wiringpi
+// ── CONFIG ────────────────────────────────────────────
+const char* SERIAL_PORT = "/dev/ttyACM0";
+const int   POLL_MS     = 2000;
+const char* LOG_FILE    = "bms_log.csv";
 
-// ── CONFIG ───────────────────────────────────────────────────────────────────
-static constexpr const char* SERIAL_PORT  = "/dev/ttyAMA10";
-static constexpr int         BAUD_RATE    = 9600;
-static constexpr int         POLL_SECONDS = 30;
-static constexpr const char* LOG_FILE     = "bms_log.csv";
-static constexpr int         LED_PIN      = 26;   // BCM numbering
-static constexpr int         LED_BRAKE    = 16;   // BCM numbering
-// ─────────────────────────────────────────────────────────────────────────────
+// ── GPIO PINS (BCM) ───────────────────────────────────
+const int LED_PIN       = 26;
+const int SEG_PINS[]    = {11,4,23,8,7,10,18,25};
+const int DIGIT_PINS[]  = {22,27,17,24};
+// ──────────────────────────────────────────────────────
 
-// ── JBD protocol constants ───────────────────────────────────────────────────
-static constexpr uint8_t JBD_START   = 0xDD;
-static constexpr uint8_t JBD_READ    = 0xA5;
-static constexpr uint8_t JBD_END     = 0x77;
-static constexpr uint8_t REG_BASIC   = 0x03;   // voltage, current, SoC, temps
-static constexpr uint8_t REG_CELLS   = 0x04;   // per-cell voltages
+// 7-segment patterns for 0-9
+const int SEG_PATTERNS[10][7] = {
+    {1,1,1,1,1,1,0}, // 0
+    {0,1,1,0,0,0,0}, // 1
+    {1,1,0,1,1,0,1}, // 2
+    {1,1,1,1,0,0,1}, // 3
+    {0,1,1,0,0,1,1}, // 4
+    {1,0,1,1,0,1,1}, // 5
+    {1,0,1,1,1,1,1}, // 6
+    {1,1,1,0,0,0,0}, // 7
+    {1,1,1,1,1,1,1}, // 8
+    {1,1,1,1,0,1,1}, // 9
+};
 
-// ── LED mode ─────────────────────────────────────────────────────────────────
-enum class LedMode : int { OFF = 0, FLASH = 1, SOLID = 2 };
-static std::atomic<LedMode> g_led_mode{ LedMode::OFF };
-static std::atomic<bool>    g_running{ true };
+// LED modes
+enum LedMode { LED_OFF, LED_FLASH, LED_SOLID };
+std::atomic<LedMode> ledMode(LED_OFF);
 
-// ─────────────────────────────────────────────────────────────────────────────
-// GPIO / LED
-// ─────────────────────────────────────────────────────────────────────────────
+// BMS data structure
+struct BMSData {
+    float voltage         = 0;
+    float current         = 0;
+    float remaining_ah    = 0;
+    float design_ah       = 0;
+    int   percent         = 0;
+    int   cycle_count     = 0;
+    std::vector<float> temps;
+    std::vector<float> cells;
+    bool valid            = false;
+};
 
-void gpio_init()
-{
-    wiringPiSetupGpio();                 // use BCM pin numbers
-    pinMode(LED_PIN,   OUTPUT);
-    digitalWrite(LED_PIN,   LOW);
-    pinMode(LED_BRAKE, OUTPUT);
-    digitalWrite(LED_BRAKE, HIGH);       // brake light on at startup
+int serial_fd = -1;
+
+// ── SERIAL SETUP ──────────────────────────────────────
+bool setupSerial() {
+    serial_fd = open(SERIAL_PORT, O_RDWR | O_NOCTTY | O_SYNC);
+    if (serial_fd < 0) {
+        std::cerr << "ERROR: Cannot open " << SERIAL_PORT << std::endl;
+        return false;
+    }
+    struct termios tty = {};
+    tcgetattr(serial_fd, &tty);
+    cfsetospeed(&tty, B9600);
+    cfsetispeed(&tty, B9600);
+    tty.c_cflag     = (tty.c_cflag & ~CSIZE) | CS8;
+    tty.c_cflag     |= (CLOCAL | CREAD);
+    tty.c_cflag     &= ~(PARENB | PARODD | CSTOPB | CRTSCTS);
+    tty.c_lflag     = 0;
+    tty.c_oflag     = 0;
+    tty.c_iflag     &= ~(IXON | IXOFF | IXANY | IGNBRK);
+    tty.c_cc[VMIN]  = 0;
+    tty.c_cc[VTIME] = 30;  // 3 second timeout
+    tcsetattr(serial_fd, TCSANOW, &tty);
+    return true;
 }
 
-void gpio_cleanup()
-{
-    digitalWrite(LED_PIN,   LOW);
-    digitalWrite(LED_BRAKE, LOW);
+// ── JBD SERIAL PROTOCOL ───────────────────────────────
+std::vector<uint8_t> sendCommand(uint8_t cmd) {
+    uint16_t chk = (0x10000 - cmd) & 0xFFFF;
+    uint8_t packet[] = {0xDD, 0xA5, cmd, 0x00,
+                        (uint8_t)(chk >> 8), (uint8_t)(chk & 0xFF), 0x77};
+    tcflush(serial_fd, TCIOFLUSH);
+    write(serial_fd, packet, sizeof(packet));
+
+    std::vector<uint8_t> resp;
+    uint8_t buf[256];
+    int total = 0;
+    auto start = std::chrono::steady_clock::now();
+
+    while (true) {
+        int n = read(serial_fd, buf + total, sizeof(buf) - total);
+        if (n > 0) total += n;
+        if (total >= 7 && buf[total-1] == 0x77) break;
+        auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now() - start).count();
+        if (ms > 3000) break;
+    }
+    for (int i = 0; i < total; i++) resp.push_back(buf[i]);
+    return resp;
 }
 
-// Runs on its own thread – mirrors the Python led_controller() exactly.
-void led_thread_fn()
-{
-    while (g_running.load()) {
-        switch (g_led_mode.load()) {
-            case LedMode::SOLID:
+// ── READ BMS ──────────────────────────────────────────
+BMSData readBMS() {
+    BMSData data;
+
+    // Basic info (cmd 0x03)
+    auto r = sendCommand(0x03);
+    if (r.size() < 7 || r[0] != 0xDD || r[2] != 0x00) return data;
+    uint8_t* d = r.data() + 4;
+
+    data.voltage       = ((d[0] << 8) | d[1]) / 100.0f;
+    int16_t raw_cur    = (d[2] << 8) | d[3];
+    data.current       = raw_cur / 100.0f;
+    data.remaining_ah  = ((d[4] << 8) | d[5]) / 100.0f;
+    data.design_ah     = ((d[6] << 8) | d[7]) / 100.0f;
+    data.cycle_count   = (d[8] << 8) | d[9];
+    data.percent       = d[19];
+    int num_temps      = d[22];
+    for (int i = 0; i < num_temps; i++) {
+        int raw = (d[23 + i*2] << 8) | d[24 + i*2];
+        data.temps.push_back((raw - 2731) / 10.0f);
+    }
+
+    // Cell voltages (cmd 0x04)
+    auto cr = sendCommand(0x04);
+    if (cr.size() >= 7 && cr[0] == 0xDD && cr[2] == 0x00) {
+        int num_cells = cr[3] / 2;
+        for (int i = 0; i < num_cells; i++) {
+            int raw = (cr[4 + i*2] << 8) | cr[5 + i*2];
+            data.cells.push_back(raw / 1000.0f);
+        }
+    }
+
+    data.valid = true;
+    return data;
+}
+
+// ── GPIO SETUP ────────────────────────────────────────
+void setupGPIO() {
+    wiringPiSetupGpio();
+    pinMode(LED_PIN, OUTPUT);
+    digitalWrite(LED_PIN, LOW);
+    for (int i = 0; i < 8; i++) {
+        pinMode(SEG_PINS[i], OUTPUT);
+        digitalWrite(SEG_PINS[i], LOW);
+    }
+    for (int i = 0; i < 4; i++) {
+        pinMode(DIGIT_PINS[i], OUTPUT);
+        digitalWrite(DIGIT_PINS[i], HIGH);
+    }
+}
+
+// ── LED CONTROLLER (runs in background thread) ────────
+void ledController() {
+    while (true) {
+        switch (ledMode.load()) {
+            case LED_SOLID:
                 digitalWrite(LED_PIN, HIGH);
                 std::this_thread::sleep_for(std::chrono::milliseconds(100));
                 break;
-            case LedMode::FLASH:
+            case LED_FLASH:
                 digitalWrite(LED_PIN, HIGH);
                 std::this_thread::sleep_for(std::chrono::milliseconds(500));
                 digitalWrite(LED_PIN, LOW);
@@ -91,453 +177,174 @@ void led_thread_fn()
                 break;
         }
     }
-    digitalWrite(LED_PIN, LOW);
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Serial port
-// ─────────────────────────────────────────────────────────────────────────────
-
-static int g_serial_fd = -1;
-
-// Convert integer baud to termios constant.
-speed_t baud_constant(int baud)
-{
-    switch (baud) {
-        case 9600:   return B9600;
-        case 19200:  return B19200;
-        case 38400:  return B38400;
-        case 57600:  return B57600;
-        case 115200: return B115200;
-        default:     return B9600;
+// ── TEMP ALERT ────────────────────────────────────────
+void monitorTempAlert(const std::vector<float>& temps) {
+    if (temps.empty()) return;
+    float max_t = *std::max_element(temps.begin(), temps.end());
+    for (size_t i = 0; i < temps.size(); i++) {
+        if (temps[i] >= 45.0f)
+            std::cout << "\nCRITICAL: Probe " << i+1
+                      << " is " << temps[i] << "C - SHUTTING DOWN RISK!" << std::endl;
+        else if (temps[i] >= 35.0f)
+            std::cout << "\nWARNING: Probe " << i+1
+                      << " is " << temps[i] << "C - getting hot!" << std::endl;
     }
+    if      (max_t >= 45.0f) ledMode = LED_SOLID;
+    else if (max_t >= 35.0f) ledMode = LED_FLASH;
+    else                     ledMode = LED_OFF;
 }
 
-bool serial_open(const char* port, int baud)
-{
-    g_serial_fd = open(port, O_RDWR | O_NOCTTY | O_SYNC);
-    if (g_serial_fd < 0) {
-        std::cerr << "ERROR: cannot open " << port << ": " << strerror(errno) << "\n";
-        return false;
+// ── 7-SEGMENT DISPLAY ─────────────────────────────────
+void displayVoltage(float voltage) {
+    char buf[6];
+    snprintf(buf, sizeof(buf), "%4.1f", voltage);
+
+    // Find and remove decimal point, track its position
+    char digits[5] = {' ',' ',' ',' ','\0'};
+    int dp_pos = -1, di = 0;
+    for (int i = 0; buf[i] && di < 4; i++) {
+        if (buf[i] == '.') { dp_pos = di - 1; continue; }
+        digits[di++] = buf[i];
     }
 
-    termios tty{};
-    if (tcgetattr(g_serial_fd, &tty) != 0) {
-        std::cerr << "ERROR: tcgetattr: " << strerror(errno) << "\n";
-        close(g_serial_fd);
-        g_serial_fd = -1;
-        return false;
-    }
-
-    speed_t spd = baud_constant(baud);
-    cfsetispeed(&tty, spd);
-    cfsetospeed(&tty, spd);
-
-    cfmakeraw(&tty);                     // 8N1, no flow control
-    tty.c_cc[VMIN]  = 0;                // non-blocking reads
-    tty.c_cc[VTIME] = 20;               // 2 s read timeout (tenths of a second)
-
-    if (tcsetattr(g_serial_fd, TCSANOW, &tty) != 0) {
-        std::cerr << "ERROR: tcsetattr: " << strerror(errno) << "\n";
-        close(g_serial_fd);
-        g_serial_fd = -1;
-        return false;
-    }
-    tcflush(g_serial_fd, TCIOFLUSH);
-    return true;
-}
-
-void serial_close()
-{
-    if (g_serial_fd >= 0) {
-        close(g_serial_fd);
-        g_serial_fd = -1;
-    }
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// JBD binary protocol
-//
-//  Request frame:  DD  A5  <reg>  00  <ckH>  <ckL>  77
-//  Response frame: DD  <reg>  00  <len>  [data × len]  <ckH>  <ckL>  77
-//
-//  Checksum = 0x10000 − (sum of reg + 0x00)  (16-bit two's complement)
-// ─────────────────────────────────────────────────────────────────────────────
-
-static uint16_t jbd_checksum(const uint8_t* data, int len)
-{
-    uint16_t sum = 0;
-    for (int i = 0; i < len; i++) sum += data[i];
-    return static_cast<uint16_t>(0x10000u - sum);
-}
-
-// Send a read request for the given register, receive and validate the reply.
-// Returns the payload bytes on success, empty vector on failure.
-std::vector<uint8_t> jbd_read_register(uint8_t reg)
-{
-    // Build request
-    uint8_t req[7];
-    req[0] = JBD_START;
-    req[1] = JBD_READ;
-    req[2] = reg;
-    req[3] = 0x00;                                      // data length = 0
-    uint16_t ck = jbd_checksum(&req[2], 2);             // checksum covers reg + len
-    req[4] = static_cast<uint8_t>(ck >> 8);
-    req[5] = static_cast<uint8_t>(ck & 0xFF);
-    req[6] = JBD_END;
-
-    tcflush(g_serial_fd, TCIOFLUSH);
-
-    if (write(g_serial_fd, req, sizeof(req)) != sizeof(req)) {
-        std::cerr << "ERROR: serial write failed\n";
-        return {};
-    }
-
-    // Read response header: DD <reg> <status> <len>
-    uint8_t header[4];
-    int got = 0;
-    auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
-
-    while (got < 4) {
-        if (std::chrono::steady_clock::now() > deadline) {
-            std::cerr << "ERROR: timeout waiting for JBD response header\n";
-            return {};
+    auto end_t = std::chrono::steady_clock::now()
+               + std::chrono::milliseconds(1000);
+    while (std::chrono::steady_clock::now() < end_t) {
+        for (int d = 0; d < 4; d++) {
+            char c = digits[d];
+            if (c >= '0' && c <= '9') {
+                int n = c - '0';
+                for (int s = 0; s < 7; s++)
+                    digitalWrite(SEG_PINS[s], SEG_PATTERNS[n][s]);
+            } else {
+                for (int s = 0; s < 7; s++)
+                    digitalWrite(SEG_PINS[s], LOW);
+            }
+            digitalWrite(SEG_PINS[7], (d == dp_pos) ? HIGH : LOW);
+            digitalWrite(DIGIT_PINS[d], LOW);
+            std::this_thread::sleep_for(std::chrono::milliseconds(5));
+            digitalWrite(DIGIT_PINS[d], HIGH);
         }
-        int n = read(g_serial_fd, header + got, 4 - got);
-        if (n > 0) got += n;
     }
-
-    if (header[0] != JBD_START) {
-        std::cerr << "ERROR: bad start byte 0x" << std::hex << (int)header[0] << std::dec << "\n";
-        return {};
-    }
-    if (header[1] != reg) {
-        std::cerr << "ERROR: register mismatch in response\n";
-        return {};
-    }
-    if (header[2] != 0x00) {
-        std::cerr << "ERROR: BMS returned error status 0x" << std::hex << (int)header[2] << std::dec << "\n";
-        return {};
-    }
-
-    int payload_len = header[3];
-
-    // Read payload + 2-byte checksum + stop byte
-    int tail_len = payload_len + 3;
-    std::vector<uint8_t> tail(tail_len);
-    got = 0;
-    deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
-
-    while (got < tail_len) {
-        if (std::chrono::steady_clock::now() > deadline) {
-            std::cerr << "ERROR: timeout waiting for JBD payload\n";
-            return {};
-        }
-        int n = read(g_serial_fd, tail.data() + got, tail_len - got);
-        if (n > 0) got += n;
-    }
-
-    // Validate stop byte
-    if (tail[tail_len - 1] != JBD_END) {
-        std::cerr << "ERROR: missing stop byte\n";
-        return {};
-    }
-
-    // Validate checksum  (covers reg + status + len + payload)
-    uint8_t ck_data[3 + payload_len];
-    ck_data[0] = reg;
-    ck_data[1] = 0x00;   // status
-    ck_data[2] = static_cast<uint8_t>(payload_len);
-    memcpy(ck_data + 3, tail.data(), payload_len);
-    uint16_t expected_ck = jbd_checksum(ck_data, 3 + payload_len);
-    uint16_t received_ck = (static_cast<uint16_t>(tail[payload_len]) << 8)
-                         |  static_cast<uint16_t>(tail[payload_len + 1]);
-    if (expected_ck != received_ck) {
-        std::cerr << "ERROR: checksum mismatch\n";
-        return {};
-    }
-
-    return std::vector<uint8_t>(tail.begin(), tail.begin() + payload_len);
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Parsed BMS data
-// ─────────────────────────────────────────────────────────────────────────────
-
-struct BmsData {
-    double              voltage      = 0;   // V
-    double              current      = 0;   // A  (negative = discharging)
-    double              remaining_ah = 0;   // Ah
-    double              nominal_ah   = 0;   // Ah
-    int                 pct          = 0;   // %
-    int                 cycles       = 0;
-    int                 num_cells    = 0;
-    std::vector<double> temps;              // °C
-    std::vector<double> cell_v;            // V per cell
-    bool                valid        = false;
-};
-
-static inline uint16_t be16(const uint8_t* p) {
-    return (static_cast<uint16_t>(p[0]) << 8) | p[1];
-}
-static inline int16_t sbe16(const uint8_t* p) {
-    return static_cast<int16_t>(be16(p));
-}
-
-BmsData read_bms()
-{
-    BmsData d;
-
-    // ── Basic info register (0x03) ──────────────────────────────────────────
-    auto basic = jbd_read_register(REG_BASIC);
-    if (basic.size() < 23) {
-        std::cerr << "ERROR: basic info payload too short (" << basic.size() << " bytes)\n";
-        return d;
+// ── LOG TO CSV ────────────────────────────────────────
+void logCSV(const BMSData& data, const std::string& ts) {
+    bool write_header = (access(LOG_FILE, F_OK) != 0);
+    std::ofstream f(LOG_FILE, std::ios::app);
+    if (write_header) {
+        f << "timestamp,voltage_v,current_a,percent,remaining_ah";
+        for (size_t i = 0; i < data.temps.size(); i++)
+            f << ",temp" << i+1 << "_c";
+        f << ",est_runtime\n";
     }
-
-    d.voltage      = be16(basic.data() + 0)  / 100.0;
-    d.current      = sbe16(basic.data() + 2) / 100.0;
-    d.remaining_ah = be16(basic.data() + 4)  / 100.0;
-    d.nominal_ah   = be16(basic.data() + 6)  / 100.0;
-    d.cycles       = be16(basic.data() + 8);
-    d.pct          = basic[19];
-    d.num_cells    = basic[21];
-    int num_temps  = basic[22];
-
-    // Temperature probes: each 2 bytes in 0.1 K; subtract 2731 → 0.1 °C
-    for (int i = 0; i < num_temps; i++) {
-        int offset = 23 + i * 2;
-        if (offset + 1 >= static_cast<int>(basic.size())) break;
-        uint16_t raw = be16(basic.data() + offset);
-        d.temps.push_back((raw - 2731) / 10.0);
+    f << ts << "," << data.voltage << "," << data.current << ","
+      << data.percent << "," << data.remaining_ah;
+    for (auto t : data.temps) f << "," << t;
+    if (data.current < 0) {
+        float h = data.remaining_ah / std::abs(data.current);
+        f << "," << (int)h << "h " << (int)((h-(int)h)*60) << "m";
+    } else {
+        f << ",";
     }
-
-    // ── Cell voltages register (0x04) ───────────────────────────────────────
-    auto cells = jbd_read_register(REG_CELLS);
-    for (int i = 0; i + 1 < static_cast<int>(cells.size()); i += 2)
-        d.cell_v.push_back(be16(cells.data() + i) / 1000.0);
-
-    d.valid = true;
-    return d;
+    f << "\n";
 }
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Helpers
-// ─────────────────────────────────────────────────────────────────────────────
-
-std::string now_str(const char* fmt = "%Y-%m-%d %H:%M:%S")
-{
-    time_t t = time(nullptr);
-    char buf[32];
-    strftime(buf, sizeof(buf), fmt, localtime(&t));
-    return buf;
-}
-
-std::string estimate_runtime(double remaining_ah, double current_a)
-{
-    if (current_a >= 0) return "";
-    double hours = remaining_ah / std::fabs(current_a);
-    int h = static_cast<int>(hours);
-    int m = static_cast<int>((hours - h) * 60);
-    return std::to_string(h) + "h " + std::to_string(m) + "m";
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Display (terminal)
-// ─────────────────────────────────────────────────────────────────────────────
-
-void display_bms(const BmsData& d, const std::string& ts)
-{
-    std::string state = (d.current > 0.01)  ? "Charging"
-                      : (d.current < -0.01) ? "Discharging"
-                                            : "Idle";
-    std::string runtime = estimate_runtime(d.remaining_ah, d.current);
-
-    std::cout << "\n" << std::string(40, '-') << "\n";
+// ── DISPLAY TO TERMINAL ───────────────────────────────
+void printData(const BMSData& data, const std::string& ts) {
+    std::string state = data.current > 0 ? "Charging"
+                      : data.current < 0 ? "Discharging" : "Idle";
+    std::cout << "\n----------------------------------------\n";
     std::cout << "  " << ts << "\n";
-    std::cout << std::string(40, '-') << "\n";
-    std::cout << std::fixed << std::setprecision(2);
-    std::cout << "  Voltage      : " << d.voltage << " V\n";
-    std::cout << "  State        : " << state << "\n";
-    std::cout << "  Current      : " << d.current << " A\n";
-    std::cout << "  Charge       : " << d.pct << "%  ("
-              << d.remaining_ah << " Ah remaining)\n";
+    std::cout << "----------------------------------------\n";
+    std::cout << "  Voltage      : " << data.voltage    << " V\n";
+    std::cout << "  State        : " << state           << "\n";
+    std::cout << "  Current      : " << data.current    << " A\n";
+    std::cout << "  Charge       : " << data.percent    << "%  ("
+              << data.remaining_ah << " Ah remaining)\n";
 
-    if (!d.temps.empty()) {
+    if (!data.temps.empty()) {
         std::cout << "  Temperature  : ";
-        for (size_t i = 0; i < d.temps.size(); i++) {
-            if (i) std::cout << ", ";
-            std::cout << "Probe " << i+1 << ": " << d.temps[i] << "C";
+        for (size_t i = 0; i < data.temps.size(); i++) {
+            if (i) std::cout << ",  ";
+            std::cout << "Probe " << i+1 << ": " << data.temps[i] << "C";
         }
         std::cout << "\n";
     }
 
-    if (!runtime.empty())
-        std::cout << "  Est. Runtime : " << runtime << " remaining\n";
-    else if (d.current > 0)
-        std::cout << "  Est. Runtime : charging\n";
-    else
-        std::cout << "  Est. Runtime : idle\n";
-
-    if (!d.cell_v.empty()) {
-        double vmin = *std::min_element(d.cell_v.begin(), d.cell_v.end());
-        double vmax = *std::max_element(d.cell_v.begin(), d.cell_v.end());
-        std::cout << std::setprecision(3);
-        std::cout << "  Cell range   : " << vmin << "V – " << vmax << "V"
-                  << "  (Δ " << (vmax - vmin) * 1000 << " mV)\n";
+    if (data.current < 0) {
+        float h = data.remaining_ah / std::abs(data.current);
+        std::cout << "  Est. Runtime : " << (int)h << "h "
+                  << (int)((h-(int)h)*60) << "m remaining\n";
+    } else {
+        std::cout << "  Est. Runtime : " << (data.current > 0 ? "charging" : "idle") << "\n";
     }
 
-    std::cout << std::string(40, '-') << "\n";
-    std::cout.flush();
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Temperature alerts & LED
-// ─────────────────────────────────────────────────────────────────────────────
-
-void monitor_temp_alert(const std::vector<double>& temps)
-{
-    if (temps.empty()) return;
-
-    double max_temp = *std::max_element(temps.begin(), temps.end());
-
-    for (size_t i = 0; i < temps.size(); i++) {
-        if (temps[i] >= 45.0)
-            std::cout << "\n\U0001F525 CRITICAL: Probe " << i+1
-                      << " temp is " << temps[i] << "C — SHUTTING DOWN RISK!\n";
-        else if (temps[i] >= 35.0)
-            std::cout << "\n⚠️  WARNING: Probe " << i+1
-                      << " temp is " << temps[i] << "C — getting hot!\n";
-    }
-
-    if      (max_temp >= 45.0) g_led_mode.store(LedMode::SOLID);
-    else if (max_temp >= 35.0) g_led_mode.store(LedMode::FLASH);
-    else                       g_led_mode.store(LedMode::OFF);
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// CSV logging
-// ─────────────────────────────────────────────────────────────────────────────
-
-static bool g_csv_header_written = false;
-
-void log_csv(const BmsData& d, const std::string& ts)
-{
-    std::ofstream f(LOG_FILE, std::ios::app);
-    if (!f) { std::cerr << "ERROR: cannot open log file\n"; return; }
-
-    if (!g_csv_header_written) {
-        f << "timestamp,voltage_v,current_a,percent,remaining_ah";
-        for (size_t i = 0; i < d.temps.size(); i++)
-            f << ",temp" << i+1 << "_c";
-        f << ",est_runtime\n";
-        g_csv_header_written = true;
-    }
-
-    std::string runtime = estimate_runtime(d.remaining_ah, d.current);
-
-    f << ts << ","
-      << std::fixed << std::setprecision(2)
-      << d.voltage << ","
-      << d.current << ","
-      << d.pct     << ","
-      << d.remaining_ah;
-
-    for (double t : d.temps) f << "," << t;
-    f << "," << runtime << "\n";
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Stub for the display module (your display.py equivalent)
-// Replace this with your actual hardware display code.
-// ─────────────────────────────────────────────────────────────────────────────
-void display_voltage(double voltage)
-{
-    // TODO: drive your 7-segment / OLED / LCD here
-    (void)voltage;
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Main
-// ─────────────────────────────────────────────────────────────────────────────
-
-int main()
-{
-    std::cout << "JBD BMS Monitor (C++) - polling " << SERIAL_PORT
-              << " every " << POLL_SECONDS << "s\n";
-    std::cout << "Log file: " << LOG_FILE << "\n";
-    std::cout << "Press Ctrl+C to stop.\n\n";
-
-    // GPIO + LED background thread
-    gpio_init();
-    std::thread led_t(led_thread_fn);
-
-    // Open serial port once and hold it for the lifetime of the program
-    if (!serial_open(SERIAL_PORT, BAUD_RATE)) {
-        g_running.store(false);
-        led_t.join();
-        return 1;
-    }
-
-    // Catch SIGINT for clean shutdown
-    signal(SIGINT, [](int) { g_running.store(false); });
-
-    while (g_running.load())
-    {
-        // ── Full poll: display + log ────────────────────────────────────────
-        BmsData d = read_bms();
-        if (d.valid) {
-            std::string ts = now_str();
-            display_bms(d, ts);
-            log_csv(d, ts);
-            display_voltage(d.voltage);
-            monitor_temp_alert(d.temps);
+    if (!data.cells.empty()) {
+        float mn = *std::min_element(data.cells.begin(), data.cells.end());
+        float mx = *std::max_element(data.cells.begin(), data.cells.end());
+        std::cout << "\n  --- Cell Voltages ---\n";
+        for (size_t i = 0; i < data.cells.size(); i++) {
+            bool warn = data.cells[i] < 2.5f || data.cells[i] > 3.65f;
+            std::cout << "  " << (warn ? "!  " : "OK ") << " Cell "
+                      << i+1 << " : " << data.cells[i] << " V\n";
         }
+        float diff = mx - mn;
+        std::cout << "\n  Cell Min  : " << mn   << " V\n";
+        std::cout << "  Cell Max  : " << mx   << " V\n";
+        std::cout << "  Cell Diff : " << diff << " V "
+                  << (diff > 0.05f ? "HIGH IMBALANCE" : "balanced") << "\n";
+    }
+    std::cout << "----------------------------------------\n";
+}
 
-        // ── Fast inner loop: temp monitoring every second for POLL_SECONDS ─
-        for (int sec = 0; sec < POLL_SECONDS && g_running.load(); sec++)
-        {
-            // Lightweight: only read basic info (register 0x03)
-            auto basic = jbd_read_register(REG_BASIC);
-            if (basic.size() >= 23) {
-                int num_temps = basic[22];
-                std::vector<double> temps;
-                for (int i = 0; i < num_temps; i++) {
-                    int offset = 23 + i * 2;
-                    if (offset + 1 >= static_cast<int>(basic.size())) break;
-                    uint16_t raw = be16(basic.data() + offset);
-                    temps.push_back((raw - 2731) / 10.0);
-                }
+// ── STARTUP TEST ──────────────────────────────────────
+void startupTest() {
+    std::cout << "Running startup test..." << std::endl;
+    ledMode = LED_FLASH;
+    displayVoltage(0.0f);
+    ledMode = LED_OFF;
+    std::cout << "Startup test complete!\n" << std::endl;
+}
 
-                // Inline temp printout on same line
-                std::string ts_short = now_str("%H:%M:%S");
-                std::cout << "\r  🌡️  [" << ts_short << "] ";
-                for (size_t i = 0; i < temps.size(); i++) {
-                    if (i) std::cout << ", ";
-                    std::cout << "Probe " << i+1 << ": "
-                              << std::fixed << std::setprecision(1)
-                              << temps[i] << "C";
-                }
-                std::cout << "   " << std::flush;
+// ── GET TIMESTAMP ─────────────────────────────────────
+std::string getTimestamp() {
+    time_t now = time(nullptr);
+    char buf[32];
+    strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S", localtime(&now));
+    return std::string(buf);
+}
 
-                monitor_temp_alert(temps);
+// ── MAIN ──────────────────────────────────────────────
+int main() {
+    setupGPIO();
+    if (!setupSerial()) return 1;
 
-                // Also update display with current voltage
-                double v = be16(basic.data()) / 100.0;
-                display_voltage(v);
-            }
+    std::thread led_t(ledController);
+    led_t.detach();
 
-            std::this_thread::sleep_for(std::chrono::seconds(1));
+    std::cout << "JBD BMS Monitor (C++) - " << SERIAL_PORT
+              << " every " << POLL_MS << "ms\n";
+    std::cout << "Log: " << LOG_FILE << "\nPress Ctrl+C to stop.\n\n";
+
+    startupTest();
+
+    float voltage = 0.0f;
+    while (true) {
+        BMSData data = readBMS();
+        if (data.valid) {
+            voltage = data.voltage;
+            std::string ts = getTimestamp();
+            printData(data, ts);
+            logCSV(data, ts);
+            monitorTempAlert(data.temps);
         }
+        displayVoltage(voltage);
+        std::this_thread::sleep_for(std::chrono::milliseconds(POLL_MS));
     }
 
-    // ── Shutdown ─────────────────────────────────────────────────────────────
-    std::cout << "\nStopping monitor...\n";
-    g_led_mode.store(LedMode::OFF);
-    std::this_thread::sleep_for(std::chrono::milliseconds(200));
-    g_running.store(false);
-    led_t.join();
-    serial_close();
-    gpio_cleanup();
+    close(serial_fd);
     return 0;
 }
