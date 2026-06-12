@@ -325,3 +325,7 @@ int main() {
 
     return 0;
 }
+
+
+
+g++ -O2 -o bms_monitor bms_monitor.cpp -lwiringPi -lpthread
