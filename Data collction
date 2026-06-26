@@ -850,10 +850,50 @@ compilation terminated.
 
 
 
+#!/usr/bin/env python3
+import subprocess
+import time
+import sys
+import os
+import threading
+import RPi.GPIO as GPIO
+from datetime import datetime
+from display import display_voltage
 
-git clone https://github.com/WiringPi/WiringPi.git
-cd WiringPi
+# ── CONFIG ────────────────────────────────────────────
+SERIAL_PORT  = "/dev/ttyAMA10"
+BAUD_RATE    = 9600
+POLL_SECONDS = 5
+LOG_FILE     = "bms_log.csv"
+led_state    = {"mode": "off"}
+LED_PIN      = 26
+LED_BRAKE    = 16
+DISPLAY_SEC  = 1
+#──────────────────────────────────────────────────────
 
+# GPIO setup
+GPIO.setmode(GPIO.BCM)
+GPIO.setup(LED_PIN, GPIO.OUT)
+GPIO.output(LED_PIN, GPIO.LOW)
+GPIO.setup(LED_BRAKE, GPIO.OUT)
+GPIO.output(LED_BRAKE, GPIO.HIGH)
+def led_controller():
+    """Runs in background, controls LED based on mode."""
+    while True:
+        mode = led_state["mode"]
+        if mode == "solid":
+            GPIO.output(LED_PIN, GPIO.HIGH)
+            time.sleep(0.1)
+        elif mode == "flash":
+            GPIO.output(LED_PIN, GPIO.HIGH)
+            time.sleep(0.5)
+            GPIO.output(LED_PIN, GPIO.LOW)
+            time.sleep(0.5)
+        else:
+            GPIO.output(LED_PIN, GPIO.LOW)
+            time.sleep(0.1)
+
+def startup_test():
 
 
 
