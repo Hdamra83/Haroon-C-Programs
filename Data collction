@@ -138,47 +138,110 @@ if __name__ == "__main__":
 
 
 
-import serial
-import csv
-import os
-from datetime import datetime
+#include <Wire.h>
+#include <math.h>
 
-PORT = "/dev/ttyACM0"   # change to ttyUSB0 if needed
-BAUD = 9600
-OUTPUT_DIR = "/home/pi/gokart_logs"
+// ---- Thermistor config ----
+#define RT0 10000
+#define B   3977
+#define VCC 5
+#define R   1700
 
-os.makedirs(OUTPUT_DIR, exist_ok=True)
+// ---- MPU6050 config ----
+const int MPU6050_ADDR = 0x68;
+int16_t AcX, AcY, AcZ, GyX, GyY, GyZ;
+float axOffset, ayOffset, azOffset;
+float gxOffset, gyOffset, gzOffset;
 
-filename = os.path.join(OUTPUT_DIR, f"run_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv")
+float readTempC() {
+  float VRT = analogRead(A0);
+  VRT = (5.00 / 1023.00) * VRT;
+  float VR = VCC - VRT;
+  float RT = VRT / (VR / R);
+  float ln  = log(RT / RT0);
+  float T0  = 25 + 273.15;
+  float TX  = (1 / ((ln / B) + (1 / T0)));
+  return TX - 273.15;
+}
 
-print(f"Logging to {filename}")
+void readSensor(float &ax, float &ay, float &az, float &gx, float &gy, float &gz) {
+  Wire.beginTransmission(MPU6050_ADDR);
+  Wire.write(0x3B);
+  Wire.endTransmission(false);
+  Wire.requestFrom(MPU6050_ADDR, 14, true);
 
-with serial.Serial(PORT, BAUD, timeout=2) as ser, open(filename, "w", newline="") as csvfile:
-    writer = csv.writer(csvfile)
+  AcX = Wire.read() << 8 | Wire.read();
+  AcY = Wire.read() << 8 | Wire.read();
+  AcZ = Wire.read() << 8 | Wire.read();
+  Wire.read(); Wire.read();
+  GyX = Wire.read() << 8 | Wire.read();
+  GyY = Wire.read() << 8 | Wire.read();
+  GyZ = Wire.read() << 8 | Wire.read();
 
-    header_written = False
+  ax = (AcX / 16384.0) * 9.81;
+  ay = (AcY / 16384.0) * 9.81;
+  az = (AcZ / 16384.0) * 9.81;
+  gx = GyX / 131.0;
+  gy = GyY / 131.0;
+  gz = GyZ / 131.0;
+}
 
-    while True:
-        try:
-            line = ser.readline().decode("utf-8").strip()
-            if not line:
-                continue
+void calibrate() {
+  float ax, ay, az, gx, gy, gz;
+  axOffset = ayOffset = azOffset = 0;
+  gxOffset = gyOffset = gzOffset = 0;
 
-            # Write header row as-is from Arduino
-            if not header_written:
-                if line.startswith("timestamp"):
-                    writer.writerow(line.split(","))
-                    csvfile.flush()
-                    header_written = True
-                continue
+  for (int i = 0; i < 100; i++) {
+    readSensor(ax, ay, az, gx, gy, gz);
+    axOffset += ax; ayOffset += ay; azOffset += az;
+    gxOffset += gx; gyOffset += gy; gzOffset += gz;
+    delay(10);
+  }
 
-            # Write data rows
-            fields = line.split(",")
-            if len(fields) == 8:
-                writer.writerow(fields)
-                csvfile.flush()  # write to disk immediately, don't buffer
-                print(line)      # optional: see data live in terminal
+  axOffset /= 100; ayOffset /= 100; azOffset /= 100;
+  gxOffset /= 100; gyOffset /= 100; gzOffset /= 100;
+}
 
-        except Exception as e:
-            print(f"Error: {e}")
-            continue
+void setup() {
+  Serial.begin(9600);
+  Wire.begin();
+  delay(100);
+
+  Wire.beginTransmission(MPU6050_ADDR);
+  Wire.write(0x6B);
+  Wire.write(0x80);
+  Wire.endTransmission(true);
+  delay(100);
+
+  Wire.beginTransmission(MPU6050_ADDR);
+  Wire.write(0x6B);
+  Wire.write(0x00);
+  Wire.endTransmission(true);
+  delay(50);
+
+  calibrate();
+
+  // Print CSV header
+  Serial.println("timestamp_ms,ax_ms2,ay_ms2,az_ms2,gx_degs,gy_degs,gz_degs,temp_c");
+}
+
+void loop() {
+  float ax, ay, az, gx, gy, gz;
+  readSensor(ax, ay, az, gx, gy, gz);
+  ax -= axOffset; ay -= ayOffset; az -= azOffset;
+  gx -= gxOffset; gy -= gyOffset; gz -= gzOffset;
+
+  float tempC = readTempC();
+
+  // Print one CSV row per reading
+  Serial.print(millis());        Serial.print(",");
+  Serial.print(ax, 3);           Serial.print(",");
+  Serial.print(ay, 3);           Serial.print(",");
+  Serial.print(az, 3);           Serial.print(",");
+  Serial.print(gx, 3);           Serial.print(",");
+  Serial.print(gy, 3);           Serial.print(",");
+  Serial.print(gz, 3);           Serial.print(",");
+  Serial.println(tempC, 2);
+
+  delay(333);
+}
