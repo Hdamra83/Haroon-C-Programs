@@ -137,3 +137,48 @@ if __name__ == "__main__":
     main()
 
 
+
+import serial
+import csv
+import os
+from datetime import datetime
+
+PORT = "/dev/ttyACM0"   # change to ttyUSB0 if needed
+BAUD = 9600
+OUTPUT_DIR = "/home/pi/gokart_logs"
+
+os.makedirs(OUTPUT_DIR, exist_ok=True)
+
+filename = os.path.join(OUTPUT_DIR, f"run_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv")
+
+print(f"Logging to {filename}")
+
+with serial.Serial(PORT, BAUD, timeout=2) as ser, open(filename, "w", newline="") as csvfile:
+    writer = csv.writer(csvfile)
+
+    header_written = False
+
+    while True:
+        try:
+            line = ser.readline().decode("utf-8").strip()
+            if not line:
+                continue
+
+            # Write header row as-is from Arduino
+            if not header_written:
+                if line.startswith("timestamp"):
+                    writer.writerow(line.split(","))
+                    csvfile.flush()
+                    header_written = True
+                continue
+
+            # Write data rows
+            fields = line.split(",")
+            if len(fields) == 8:
+                writer.writerow(fields)
+                csvfile.flush()  # write to disk immediately, don't buffer
+                print(line)      # optional: see data live in terminal
+
+        except Exception as e:
+            print(f"Error: {e}")
+            continue
