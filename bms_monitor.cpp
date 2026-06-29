@@ -288,3 +288,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+
+pip3 install pyserial --break-system-packages
