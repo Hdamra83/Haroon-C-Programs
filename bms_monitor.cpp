@@ -1,331 +1,290 @@
-#include <iostream>
-#include <fstream>
-#include <sstream>
-#include <string>
-#include <vector>
-#include <thread>
-#include <atomic>
-#include <chrono>
-#include <ctime>
-#include <cmath>
-#include <algorithm>
-#include <unistd.h>
-#include <wiringPi.h>
+#!/usr/bin/env python3
+import serial
+import time
+import os
+import sys
+import struct
+import threading
+import RPi.GPIO as GPIO
+from datetime import datetime
 
-// ── CONFIG ────────────────────────────────────────────
-const char* SERIAL_PORT = "/dev/ttyACM0";
-const int   POLL_MS     = 2000;
-const char* LOG_FILE    = "bms_log.csv";
+# ── CONFIG ────────────────────────────────────────────
+SERIAL_PORT  = "/dev/ttyAMA10"
+BAUD_RATE    = 9600
+POLL_SECONDS = 1
+LOG_FILE     = "bms_log.csv"
+led_state    = {"mode": "off"}
+LED_PIN      = 26
+LED_BRAKE    = 16
+# ──────────────────────────────────────────────────────
 
-// ── GPIO PINS (BCM) ───────────────────────────────────
-const int LED_PIN      = 26;
-const int SEG_PINS[]   = {11,4,23,8,7,10,18,25};
-const int DIGIT_PINS[] = {22,27,17,24};
-// ──────────────────────────────────────────────────────
+# ── GPIO SETUP ────────────────────────────────────────
+GPIO.setmode(GPIO.BCM)
+GPIO.setup(LED_PIN,   GPIO.OUT)
+GPIO.setup(LED_BRAKE, GPIO.OUT)
+GPIO.output(LED_PIN,   GPIO.LOW)
+GPIO.output(LED_BRAKE, GPIO.HIGH)
 
-// 7-segment patterns for 0-9
-const int SEG_PATTERNS[10][7] = {
-    {1,1,1,1,1,1,0}, // 0
-    {0,1,1,0,0,0,0}, // 1
-    {1,1,0,1,1,0,1}, // 2
-    {1,1,1,1,0,0,1}, // 3
-    {0,1,1,0,0,1,1}, // 4
-    {1,0,1,1,0,1,1}, // 5
-    {1,0,1,1,1,1,1}, // 6
-    {1,1,1,0,0,0,0}, // 7
-    {1,1,1,1,1,1,1}, // 8
-    {1,1,1,1,0,1,1}, // 9
-};
+# ── LED CONTROLLER ────────────────────────────────────
+def led_controller():
+    while True:
+        mode = led_state["mode"]
+        if mode == "solid":
+            GPIO.output(LED_PIN, GPIO.HIGH)
+            time.sleep(0.1)
+        elif mode == "flash":
+            GPIO.output(LED_PIN, GPIO.HIGH)
+            time.sleep(0.5)
+            GPIO.output(LED_PIN, GPIO.LOW)
+            time.sleep(0.5)
+        else:
+            GPIO.output(LED_PIN, GPIO.LOW)
+            time.sleep(0.1)
 
-// LED modes
-enum LedMode { LED_OFF, LED_FLASH, LED_SOLID };
-std::atomic<LedMode> ledMode(LED_OFF);
+led_thread = threading.Thread(target=led_controller, daemon=True)
+led_thread.start()
 
-// BMS data structure
-struct BMSData {
-    float voltage      = 0;
-    float current      = 0;
-    float remaining_ah = 0;
-    float design_ah    = 0;
-    int   percent      = 0;
-    int   cycle_count  = 0;
-    std::vector<float> temps;
-    std::vector<float> cells;
-    bool  valid        = false;
-};
+# ── OPEN SERIAL PORT ──────────────────────────────────
+try:
+    ser = serial.Serial(
+        port=SERIAL_PORT,
+        baudrate=BAUD_RATE,
+        bytesize=serial.EIGHTBITS,
+        parity=serial.PARITY_NONE,
+        stopbits=serial.STOPBITS_ONE,
+        timeout=2
+    )
+except Exception as e:
+    print(f"ERROR: Cannot open {SERIAL_PORT}: {e}")
+    sys.exit(1)
 
-// ── READ BMS VIA JBDTOOL ──────────────────────────────
-BMSData readBMS() {
-    BMSData data;
+# ── JBD PROTOCOL ──────────────────────────────────────
+def calc_checksum(data):
+    chk = 0x10000
+    for b in data:
+        chk -= b
+    return chk & 0xFFFF
 
-    char cmd[128];
-    snprintf(cmd, sizeof(cmd),
-             "jbdtool -t serial:%s,9600 2>/dev/null", SERIAL_PORT);
+def send_command(reg):
+    """Send a read command to the BMS."""
+    chk = calc_checksum([reg, 0x00])
+    packet = bytes([0xDD, 0xA5, reg, 0x00,
+                    (chk >> 8) & 0xFF, chk & 0xFF, 0x77])
+    ser.reset_input_buffer()
+    ser.write(packet)
 
-    FILE* pipe = popen(cmd, "r");
-    if (!pipe) return data;
+def read_response():
+    """Read and validate response from BMS."""
+    # Wait for start byte 0xDD
+    start = ser.read(1)
+    if not start or start[0] != 0xDD:
+        return None
 
-    char line[256];
-    while (fgets(line, sizeof(line), pipe)) {
-        std::string s(line);
-        s.erase(s.find_last_not_of(" \n\r\t") + 1);
+    # Read register, status, length
+    header = ser.read(3)
+    if len(header) < 3:
+        return None
 
-        std::istringstream ss(s);
-        std::string key, val;
-        if (!(ss >> key >> val)) continue;
+    reg    = header[0]
+    status = header[1]
+    length = header[2]
 
-        if      (key == "Voltage")           data.voltage      = std::stof(val);
-        else if (key == "Current")           data.current      = std::stof(val);
-        else if (key == "RemainingCapacity") data.remaining_ah = std::stof(val);
-        else if (key == "DesignCapacity")    data.design_ah    = std::stof(val);
-        else if (key == "PercentCapacity")   data.percent      = std::stoi(val);
-        else if (key == "CycleCount")        data.cycle_count  = std::stoi(val);
-        else if (key == "Temps") {
-            std::stringstream ts(val);
-            std::string t;
-            while (std::getline(ts, t, ','))
-                data.temps.push_back(std::stof(t));
-        }
-        else if (key.substr(0,4) == "Cell"
-              && key != "CellTotal"
-              && key != "CellMin"
-              && key != "CellMax"
-              && key != "CellDiff"
-              && key != "CellAvg") {
-            try { data.cells.push_back(std::stof(val)); } catch(...) {}
-        }
+    if status != 0x00:
+        return None
+
+    # Read data + checksum + end byte
+    rest = ser.read(length + 3)
+    if len(rest) < length + 3:
+        return None
+
+    data     = rest[:length]
+    checksum = (rest[length] << 8) | rest[length+1]
+    end      = rest[length+2]
+
+    if end != 0x77:
+        return None
+
+    # Verify checksum
+    chk_data = [reg, status, length] + list(data)
+    expected = calc_checksum(chk_data[1:])  # status + length + data
+    # Return data if end byte is correct
+    return data
+
+# ── PARSE BASIC INFO (0x03) ───────────────────────────
+def parse_basic_info(data):
+    if len(data) < 23:
+        return None
+
+    voltage   = struct.unpack('>H', data[0:2])[0]  / 100.0
+    current   = struct.unpack('>h', data[2:4])[0]  / 100.0  # signed
+    remaining = struct.unpack('>H', data[4:6])[0]  / 100.0
+    design    = struct.unpack('>H', data[6:8])[0]  / 100.0
+    cycles    = struct.unpack('>H', data[8:10])[0]
+    percent   = data[19]
+    num_temps = data[22]
+
+    temps = []
+    for i in range(num_temps):
+        idx = 23 + i * 2
+        if idx + 1 < len(data):
+            raw = struct.unpack('>H', data[idx:idx+2])[0]
+            temps.append((raw - 2731) / 10.0)
+
+    return {
+        "voltage":   voltage,
+        "current":   current,
+        "remaining": remaining,
+        "design":    design,
+        "cycles":    cycles,
+        "percent":   percent,
+        "temps":     temps,
     }
 
-    pclose(pipe);
-    data.valid = (data.voltage > 0);
-    return data;
-}
+# ── PARSE CELL VOLTAGES (0x04) ────────────────────────
+def parse_cells(data):
+    cells = []
+    num = len(data) // 2
+    for i in range(num):
+        raw = struct.unpack('>H', data[i*2:i*2+2])[0]
+        cells.append(raw / 1000.0)
+    return cells
 
-// ── GPIO SETUP ────────────────────────────────────────
-void setupGPIO() {
-    wiringPiSetupGpio();
-    pinMode(LED_PIN, OUTPUT);
-    digitalWrite(LED_PIN, LOW);
-    for (int i = 0; i < 8; i++) {
-        pinMode(SEG_PINS[i], OUTPUT);
-        digitalWrite(SEG_PINS[i], LOW);
-    }
-    for (int i = 0; i < 4; i++) {
-        pinMode(DIGIT_PINS[i], OUTPUT);
-        digitalWrite(DIGIT_PINS[i], HIGH);
-    }
-}
+# ── READ BMS ──────────────────────────────────────────
+def read_bms():
+    try:
+        # Read basic info
+        send_command(0x03)
+        time.sleep(0.1)
+        raw_basic = read_response()
+        if not raw_basic:
+            return None
+        basic = parse_basic_info(raw_basic)
+        if not basic:
+            return None
 
-// ── LED CONTROLLER (background thread) ───────────────
-void ledController() {
-    while (true) {
-        switch (ledMode.load()) {
-            case LED_SOLID:
-                digitalWrite(LED_PIN, HIGH);
-                std::this_thread::sleep_for(
-                    std::chrono::milliseconds(100));
-                break;
-            case LED_FLASH:
-                digitalWrite(LED_PIN, HIGH);
-                std::this_thread::sleep_for(
-                    std::chrono::milliseconds(500));
-                digitalWrite(LED_PIN, LOW);
-                std::this_thread::sleep_for(
-                    std::chrono::milliseconds(500));
-                break;
-            default:
-                digitalWrite(LED_PIN, LOW);
-                std::this_thread::sleep_for(
-                    std::chrono::milliseconds(100));
-                break;
-        }
-    }
-}
+        # Read cell voltages
+        send_command(0x04)
+        time.sleep(0.1)
+        raw_cells = read_response()
+        cells = parse_cells(raw_cells) if raw_cells else []
 
-// ── TEMP ALERT + LED ──────────────────────────────────
-void monitorTempAlert(const std::vector<float>& temps) {
-    if (temps.empty()) return;
-    float max_t = *std::max_element(temps.begin(), temps.end());
+        basic["cells"] = cells
+        return basic
 
-    for (size_t i = 0; i < temps.size(); i++) {
-        if (temps[i] >= 45.0f)
-            std::cout << "\nCRITICAL: Probe " << i+1
-                      << " is " << temps[i]
-                      << "C - SHUTTING DOWN RISK!" << std::endl;
-        else if (temps[i] >= 35.0f)
-            std::cout << "\nWARNING: Probe " << i+1
-                      << " is " << temps[i]
-                      << "C - getting hot!" << std::endl;
-    }
+    except Exception as e:
+        print(f"ERROR reading BMS: {e}")
+        return None
 
-    if      (max_t >= 45.0f) ledMode = LED_SOLID;
-    else if (max_t >= 35.0f) ledMode = LED_FLASH;
-    else                     ledMode = LED_OFF;
-}
+# ── TEMP ALERT ────────────────────────────────────────
+def monitor_temp_alert(temps):
+    if not temps:
+        return
+    max_temp = max(temps)
+    for i, t in enumerate(temps):
+        if t >= 45:
+            print(f"\n🔥 CRITICAL: Probe {i+1} is {t:.1f}C — SHUTTING DOWN RISK!")
+        elif t >= 35:
+            print(f"\n⚠️  WARNING: Probe {i+1} is {t:.1f}C — getting hot!")
 
-// ── 7-SEGMENT DISPLAY ─────────────────────────────────
-void displayVoltage(float voltage) {
-    char buf[6];
-    snprintf(buf, sizeof(buf), "%4.1f", voltage);
+    if max_temp >= 45:
+        led_state["mode"] = "solid"
+    elif max_temp >= 35:
+        led_state["mode"] = "flash"
+    else:
+        led_state["mode"] = "off"
 
-    char digits[5] = {' ',' ',' ',' ','\0'};
-    int dp_pos = -1, di = 0;
-    for (int i = 0; buf[i] && di < 4; i++) {
-        if (buf[i] == '.') { dp_pos = di - 1; continue; }
-        digits[di++] = buf[i];
-    }
+# ── DISPLAY TO TERMINAL ───────────────────────────────
+def display(data):
+    now     = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    voltage = data["voltage"]
+    current = data["current"]
+    pct     = data["percent"]
+    remain  = data["remaining"]
+    temps   = data["temps"]
+    cells   = data["cells"]
+    state   = "Charging" if current > 0 else "Discharging" if current < 0 else "Idle"
 
-    auto end_t = std::chrono::steady_clock::now()
-               + std::chrono::milliseconds(1000);
-    while (std::chrono::steady_clock::now() < end_t) {
-        for (int d = 0; d < 4; d++) {
-            char c = digits[d];
-            if (c >= '0' && c <= '9') {
-                int n = c - '0';
-                for (int s = 0; s < 7; s++)
-                    digitalWrite(SEG_PINS[s], SEG_PATTERNS[n][s]);
-            } else {
-                for (int s = 0; s < 7; s++)
-                    digitalWrite(SEG_PINS[s], LOW);
-            }
-            digitalWrite(SEG_PINS[7], (d == dp_pos) ? HIGH : LOW);
-            digitalWrite(DIGIT_PINS[d], LOW);
-            std::this_thread::sleep_for(
-                std::chrono::milliseconds(5));
-            digitalWrite(DIGIT_PINS[d], HIGH);
-        }
-    }
-}
+    runtime = None
+    if current < 0:
+        h = remain / abs(current)
+        runtime = f"{int(h)}h {int((h - int(h)) * 60)}m"
 
-// ── LOG TO CSV ────────────────────────────────────────
-void logCSV(const BMSData& data, const std::string& ts) {
-    bool write_header = (access(LOG_FILE, F_OK) != 0);
-    std::ofstream f(LOG_FILE, std::ios::app);
-    if (write_header) {
-        f << "timestamp,voltage_v,current_a,percent,remaining_ah";
-        for (size_t i = 0; i < data.temps.size(); i++)
-            f << ",temp" << i+1 << "_c";
-        f << ",est_runtime\n";
-    }
-    f << ts << "," << data.voltage << "," << data.current
-      << "," << data.percent << "," << data.remaining_ah;
-    for (auto t : data.temps) f << "," << t;
-    if (data.current < 0) {
-        float h = data.remaining_ah / std::abs(data.current);
-        f << "," << (int)h << "h " << (int)((h-(int)h)*60) << "m";
-    } else {
-        f << ",";
-    }
-    f << "\n";
-}
+    print(f"\n{'─'*40}")
+    print(f"  {now}")
+    print(f"{'─'*40}")
+    print(f"  Voltage      : {voltage:.2f} V")
+    print(f"  State        : {state}")
+    print(f"  Current      : {current:.2f} A")
+    print(f"  Charge       : {pct}%  ({remain:.1f} Ah remaining)")
+    if temps:
+        labels = [f"Probe {i+1}: {t:.1f}C" for i, t in enumerate(temps)]
+        print(f"  Temperature  : {', '.join(labels)}")
+    if runtime:
+        print(f"  Est. Runtime : {runtime} remaining")
+    elif current > 0:
+        print(f"  Est. Runtime : charging")
+    else:
+        print(f"  Est. Runtime : idle")
 
-// ── PRINT TO TERMINAL ─────────────────────────────────
-void printData(const BMSData& data, const std::string& ts) {
-    std::string state = data.current > 0 ? "Charging"
-                      : data.current < 0 ? "Discharging" : "Idle";
+    if cells:
+        print(f"\n  --- Cell Voltages ---")
+        for i, v in enumerate(cells):
+            warn = "⚠️ " if v < 2.5 or v > 3.65 else "✓  "
+            print(f"  {warn} Cell {i+1:2d} : {v:.3f} V")
+        diff = max(cells) - min(cells)
+        print(f"\n  Cell Min     : {min(cells):.3f} V")
+        print(f"  Cell Max     : {max(cells):.3f} V")
+        print(f"  Cell Diff    : {diff:.3f} V  "
+              f"{'⚠️  HIGH IMBALANCE' if diff > 0.05 else '✓ balanced'}")
 
-    std::cout << "\n----------------------------------------\n";
-    std::cout << "  " << ts << "\n";
-    std::cout << "----------------------------------------\n";
-    std::cout << "  Voltage      : " << data.voltage    << " V\n";
-    std::cout << "  State        : " << state           << "\n";
-    std::cout << "  Current      : " << data.current    << " A\n";
-    std::cout << "  Charge       : " << data.percent    << "%  ("
-              << data.remaining_ah << " Ah remaining)\n";
+    print(f"{'─'*40}")
+    monitor_temp_alert(temps)
+    return now, voltage, current, pct, remain, temps, runtime
 
-    if (!data.temps.empty()) {
-        std::cout << "  Temperature  : ";
-        for (size_t i = 0; i < data.temps.size(); i++) {
-            if (i) std::cout << ",  ";
-            std::cout << "Probe " << i+1
-                      << ": " << data.temps[i] << "C";
-        }
-        std::cout << "\n";
-    }
+# ── LOG TO CSV ────────────────────────────────────────
+def log_csv(now, voltage, current, pct, remaining, temps, runtime):
+    write_header = not os.path.exists(LOG_FILE)
+    with open(LOG_FILE, "a") as f:
+        if write_header:
+            temp_headers = ",".join([f"temp{i+1}_c" for i in range(len(temps))])
+            f.write(f"timestamp,voltage_v,current_a,percent,"
+                    f"remaining_ah,{temp_headers},est_runtime\n")
+        temp_vals = ",".join([str(t) for t in temps])
+        f.write(f"{now},{voltage},{current},{pct},"
+                f"{remaining},{temp_vals},{runtime or ''}\n")
 
-    if (data.current < 0) {
-        float h = data.remaining_ah / std::abs(data.current);
-        std::cout << "  Est. Runtime : " << (int)h << "h "
-                  << (int)((h-(int)h)*60) << "m remaining\n";
-    } else {
-        std::cout << "  Est. Runtime : "
-                  << (data.current > 0 ? "charging" : "idle") << "\n";
-    }
+# ── STARTUP TEST ──────────────────────────────────────
+def startup_test():
+    print("Running startup test...")
+    led_state["mode"] = "flash"
+    time.sleep(3)
+    led_state["mode"] = "off"
+    print("Startup test complete!\n")
 
-    if (!data.cells.empty()) {
-        float mn = *std::min_element(
-            data.cells.begin(), data.cells.end());
-        float mx = *std::max_element(
-            data.cells.begin(), data.cells.end());
-        std::cout << "\n  --- Cell Voltages ---\n";
-        for (size_t i = 0; i < data.cells.size(); i++) {
-            bool warn = data.cells[i] < 2.5f
-                     || data.cells[i] > 3.65f;
-            std::cout << "  " << (warn ? "!  " : "OK ")
-                      << " Cell " << i+1
-                      << " : " << data.cells[i] << " V\n";
-        }
-        float diff = mx - mn;
-        std::cout << "\n  Cell Min  : " << mn   << " V\n";
-        std::cout << "  Cell Max  : " << mx   << " V\n";
-        std::cout << "  Cell Diff : " << diff << " V "
-                  << (diff > 0.05f ? "HIGH IMBALANCE"
-                                   : "balanced") << "\n";
-    }
-    std::cout << "----------------------------------------\n";
-}
+# ── MAIN ──────────────────────────────────────────────
+def main():
+    print(f"JBD BMS Monitor — direct serial {SERIAL_PORT} @ {BAUD_RATE} baud")
+    print(f"Log file: {LOG_FILE}")
+    print("Press Ctrl+C to stop.\n")
 
-// ── STARTUP TEST ──────────────────────────────────────
-void startupTest() {
-    std::cout << "Running startup test..." << std::endl;
-    ledMode = LED_FLASH;
-    displayVoltage(0.0f);
-    ledMode = LED_OFF;
-    std::cout << "Startup test complete!\n" << std::endl;
-}
+    startup_test()
 
-// ── GET TIMESTAMP ─────────────────────────────────────
-std::string getTimestamp() {
-    time_t now = time(nullptr);
-    char buf[32];
-    strftime(buf, sizeof(buf), "%Y-%m-%d %H:%M:%S",
-             localtime(&now));
-    return std::string(buf);
-}
+    try:
+        while True:
+            data = read_bms()
+            if data:
+                now, voltage, current, pct, remain, temps, runtime = display(data)
+                log_csv(now, voltage, current, pct, remain, temps, runtime)
+            else:
+                print("WARNING: No data from BMS — retrying...")
+            time.sleep(POLL_SECONDS)
 
-// ── MAIN ──────────────────────────────────────────────
-int main() {
-    setupGPIO();
+    except KeyboardInterrupt:
+        print("\nStopping monitor...")
+        led_state["mode"] = "off"
+        time.sleep(0.2)
+        GPIO.cleanup()
+        ser.close()
 
-    std::thread led_t(ledController);
-    led_t.detach();
-
-    std::cout << "JBD BMS Monitor (C++) - "
-              << SERIAL_PORT << " every "
-              << POLL_MS << "ms\n";
-    std::cout << "Log: " << LOG_FILE
-              << "\nPress Ctrl+C to stop.\n\n";
-
-    startupTest();
-
-    float voltage = 0.0f;
-    while (true) {
-        BMSData data = readBMS();
-        if (data.valid) {
-            voltage = data.voltage;
-            std::string ts = getTimestamp();
-            printData(data, ts);
-            logCSV(data, ts);
-            monitorTempAlert(data.temps);
-        }
-        displayVoltage(voltage);
-        std::this_thread::sleep_for(
-            std::chrono::milliseconds(POLL_MS));
-    }
-
-    return 0;
-}
-
-
-
-g++ -O2 -o bms_monitor bms_monitor.cpp -lwiringPi -lpthread
+if __name__ == "__main__":
+    main()
