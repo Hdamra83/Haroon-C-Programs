@@ -467,3 +467,8 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
+
+
+sudo pip3 install adafruit-blinka --break-system-packages
