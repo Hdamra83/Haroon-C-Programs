@@ -470,5 +470,4 @@ if __name__ == "__main__":
 
 
 
-sudo apt install libgpiod2
-sudo pip3 install adafruit-circuitpython-dht --break-system-packages
+sudo pip3 install adafruit-circuitpython-bmp280 --break-system-packages
