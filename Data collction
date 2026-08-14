@@ -470,7 +470,7 @@ if __name__ == "__main__":
 
 
 
-sudo pip3 uninstall RPi.GPIO -y --break-system-packages
+sudo apt install --reinstall python3-rpi-lgpio -y
 
 
 
