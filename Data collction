@@ -469,5 +469,9 @@ if __name__ == "__main__":
     main()
 
 
-sudo apt install python3-libgpiod -y
-sudo pip3 install adafruit-blinka adafruit-circuitpython-dht adafruit-circuitpython-bmp280 --break-system-packages
+
+sudo apt remove python3-rpi.gpio -y
+sudo pip3 uninstall RPi.GPIO -y
+
+
+
