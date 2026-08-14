@@ -470,4 +470,5 @@ if __name__ == "__main__":
 
 
 
-sudo pip3 install adafruit-circuitpython-bmp280 --break-system-packages
+sudo pip3 uninstall RPi.GPIO
+sudo pip3 install rpi-lgpio --break-system-packages
