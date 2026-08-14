@@ -469,4 +469,7 @@ if __name__ == "__main__":
     main()
 
 
-python3 -c "import RPi.GPIO as GPIO; print(GPIO.VERSION); print(GPIO.__path__)"
+sudo pip3 uninstall rpi-lgpio -y
+sudo apt remove python3-rpi.gpio -y
+sudo apt install python3-rpi-lgpio -y
+
