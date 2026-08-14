@@ -470,8 +470,7 @@ if __name__ == "__main__":
 
 
 
-sudo apt remove python3-rpi.gpio -y
-sudo pip3 uninstall RPi.GPIO -y
+sudo python3 -c "import RPi.GPIO as GPIO; print(GPIO.VERSION); print(GPIO.__path__)"
 
 
 
