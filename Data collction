@@ -470,7 +470,7 @@ if __name__ == "__main__":
 
 
 
-sudo python3 -c "import RPi.GPIO as GPIO; print(GPIO.VERSION); print(GPIO.__path__)"
+sudo pip3 uninstall RPi.GPIO -y --break-system-packages
 
 
 
